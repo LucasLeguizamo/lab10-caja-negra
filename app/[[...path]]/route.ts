@@ -1,4 +1,5 @@
-import { handle } from "../../lib/service";
+import { after } from "next/server";
+import { handle, record } from "../../lib/service";
 
 // req.text() se come el BOM; el original no: un BOM inicial es JSON inválido -> E100 (id 606).
 const body = (b: ArrayBuffer) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(b);
@@ -6,7 +7,11 @@ const body = (b: ArrayBuffer) => new TextDecoder("utf-8", { ignoreBOM: true }).d
 // Una sola puerta: todas las rutas y métodos van a lib/service, que decide como el original.
 async function route(req: Request) {
   const { pathname } = new URL(req.url);
-  const res = await handle(req.method, pathname, req.headers.get("authorization"), body(await req.arrayBuffer()));
+  const auth = req.headers.get("authorization");
+  const raw = body(await req.arrayBuffer());
+  const res = await handle(req.method, pathname, auth, raw);
+  // Graba después de responder: no suma latencia al paso (5 s por paso).
+  after(() => record({ method: req.method, path: pathname, auth, body: raw, ua: req.headers.get("user-agent"), ct: req.headers.get("content-type"), res }));
   const isText = typeof res.body === "string";
   // HEAD: sin cuerpo (log id 93)
   const out = req.method === "HEAD" ? null : isText ? (res.body as string) : JSON.stringify(res.body);
