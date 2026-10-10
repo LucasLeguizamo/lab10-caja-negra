@@ -7,12 +7,12 @@ import { requerir } from "../lib/red";
 const REPO = "LucasLeguizamo/lab10-caja-negra";
 // Solo esto puede cambiar una misión. Ni tools/ (la compuerta usa el replay.py de main, y no debe poder cambiarse
 // desde la misión), ni .env, material/ o configuración de despliegue.
-const RUTAS = "lib spec experimentos.jsonl";
+const RUTAS = "lib spec tests experimentos.jsonl";
 
 export default defineTool({
   availableInSubagents: false,
   description:
-    "Cierra la misión: corre la compuerta de paridad, commitea lib/ spec/ experimentos.jsonl en la rama " +
+    "Cierra la misión: corre la compuerta de paridad, commitea lib/ spec/ tests/ experimentos.jsonl en la rama " +
     "reclamada, hace push y abre un PR en borrador contra main. Sin paridad, el título lleva [SIN PARIDAD] y el cuerpo " +
     "el fallo: la evidencia nunca se pierde y una persona decide. No despliega ni mergea.",
   inputSchema: z.object({

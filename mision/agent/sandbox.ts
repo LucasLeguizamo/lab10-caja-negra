@@ -7,7 +7,11 @@ import { politica, REPO_DIR, REPO_URL } from "./lib/red";
 export const environment = VercelSandbox.environment({
   prepare: async (sandbox) => {
     const r = await sandbox.run({
-      command: `git clone ${REPO_URL} ${REPO_DIR} && cd ${REPO_DIR} && corepack enable && pnpm install --frozen-lockfile`,
+      // tester-army/e2e exige Node >= 24.8: si la imagen trae uno anterior, se instala el último 24.
+      command:
+        `node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>24||(a===24&&b>=8)?0:1)' ` +
+        `|| (sudo npm i -g n && sudo n 24) && ` +
+        `git clone ${REPO_URL} ${REPO_DIR} && cd ${REPO_DIR} && corepack enable && pnpm install --frozen-lockfile`,
     });
     if (r.exitCode !== 0) throw new Error(r.stderr);
   },

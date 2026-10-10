@@ -39,8 +39,25 @@ export const concluir = defineTool({
 
 export const verificar = defineTool({
   description:
-    "Compuerta de paridad: regla 2 (el reemplazo no llama a nadie), pnpm build, servidor de cero en :3111 y " +
-    "tools/replay.py de TODO el log. ok:false trae la etapa y las diferencias.",
+    "Compuerta de paridad: regla 2 (el reemplazo no llama a nadie), log solo crece, tests/ intactos desde que el " +
+    "tester los fijó, pnpm build, servidor de cero en :3111, tools/replay.py de TODO el log y la suite e2e completa. " +
+    "ok:false trae la etapa y las diferencias.",
   inputSchema: z.object({}),
   execute: (_input, ctx) => caja.verificar(ctx),
+});
+
+export const correr_e2e = defineTool({
+  description:
+    "Corre la suite e2e (tester-army/e2e, tests/**/*.e2e.ts) contra el reemplazo actual construido y arrancado de " +
+    "cero en :3111. Devuelve ok y la salida (qué test falló y por qué). No toca el original.",
+  inputSchema: z.object({}),
+  execute: (_input, ctx) => caja.correrE2e(ctx),
+});
+
+export const fijar_tests = defineTool({
+  description:
+    "Fija los tests de la misión: commit de tests/ en la rama. Desde aquí la compuerta rechaza cualquier cambio en " +
+    "tests/. Llamar UNA vez, cuando los tests están escritos y fallan por la razón esperada (el comando aún no existe).",
+  inputSchema: z.object({ resumen: z.string().min(10).max(60) }),
+  execute: ({ resumen }, ctx) => caja.fijarTests(ctx, resumen),
 });

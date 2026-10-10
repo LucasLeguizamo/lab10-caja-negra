@@ -67,12 +67,48 @@ export async function vigia(ctx: Ctx) {
   });
 }
 
+// Servidor de cero en :3111 (X-Req vuelve a 1), con el token que usan replay.py y los tests e2e.
+const ARRANCAR = [
+  "[ -f /tmp/srv.pid ] && kill $(cat /tmp/srv.pid) 2>/dev/null; true", // sin lsof: la imagen del sandbox no lo garantiza
+  "(PORT=3111 TEAM_TOKEN=test-token node server.mjs > /tmp/srv.log 2>&1 & echo $! > /tmp/srv.pid)",
+  "for i in $(seq 1 30); do curl -s localhost:3111/health >/dev/null && break; sleep 1; done",
+];
+const PARAR = "kill $(cat /tmp/srv.pid) 2>/dev/null";
+const E2E = "E2E_TELEMETRY_DISABLED=1 E2E_BASE_URL=http://localhost:3111 pnpm e2e > /tmp/e2e.log 2>&1";
+
+/** Suite e2e (tests/**\/*.e2e.ts, tester-army/e2e) contra el código actual. Construye si hace falta. */
+export async function correrE2e(ctx: Ctx) {
+  const s = await ctx.getSandbox(environment);
+  const build = await sh(s, "pnpm build > /tmp/build.log 2>&1; rc=$?; tail -40 /tmp/build.log; exit $rc");
+  if (build.exitCode !== 0) return { ok: false, etapa: "build", detalle: build.stdout };
+  const r = await sh(s, [...ARRANCAR, `${E2E}; rc=$?`, PARAR, "tail -80 /tmp/e2e.log; exit $rc"].join("; "));
+  return { ok: r.exitCode === 0, etapa: "e2e", detalle: r.stdout };
+}
+
+/**
+ * Fija los tests del tester con un commit propio y guarda su sha en .gate/tests.sha. Desde aquí la compuerta exige que
+ * tests/ no cambie: el implementador hace pasar los tests, no los reescribe.
+ */
+export async function fijarTests(ctx: Ctx, resumen: string) {
+  const s = await ctx.getSandbox(environment);
+  const r = await sh(
+    s,
+    "git add tests && git -c user.name=mision-caja -c user.email=mision@caja.local commit -m \"$MSG\" && " +
+      "mkdir -p .gate && git rev-parse HEAD | tee .gate/tests.sha",
+    { MSG: `test(mision): ${resumen}` },
+  );
+  if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
+  return { sha: r.stdout.trim() };
+}
+
 /**
  * Compuerta de paridad (determinista, la misma para implementador y publicar):
  *  1. regla 2: el reemplazo no puede hablar con el original ni con otro reemplazo;
  *  2. el log solo crece: las filas de origin/main siguen iguales (salvo `conclusion`), nadie reescribió evidencia;
- *  3. build limpio (sin .next viejo) + servidor de cero en :3111;
- *  4. replay.py DE origin/main (no el del sandbox: el implementador tiene bash) sobre todo el log.
+ *  3. tests/ intactos desde que el tester los fijó (.gate/tests.sha);
+ *  4. build limpio (sin .next viejo) + servidor de cero en :3111;
+ *  5. replay.py DE origin/main (no el del sandbox: el implementador tiene bash) sobre todo el log;
+ *  6. suite e2e completa (contrato, ejemplos y los tests de la misión) sobre el mismo servidor.
  */
 export async function verificar(ctx: Ctx) {
   const s = await ctx.getSandbox(environment);
@@ -82,22 +118,27 @@ export async function verificar(ctx: Ctx) {
   const log = await sh(s, `git show origin/main:experimentos.jsonl > /tmp/log-main.jsonl && python3 -c '${SOLO_CRECE}'`);
   if (log.exitCode !== 0) return { ok: false, etapa: "log", detalle: (log.stderr || log.stdout).slice(-3000) };
 
+  // ponytail: el sha vive en el sandbox; un bash decidido podría reescribirlo. El PR muestra el diff de tests/ igual.
+  const tests = await sh(s, "[ ! -f .gate/tests.sha ] || git diff --stat --exit-code $(cat .gate/tests.sha) -- tests");
+  if (tests.exitCode !== 0) return { ok: false, etapa: "tests-tocados", detalle: tests.stdout.slice(-3000) };
+
   const build = await sh(s, "rm -rf .next && pnpm build > /tmp/build.log 2>&1; rc=$?; tail -40 /tmp/build.log; exit $rc");
   if (build.exitCode !== 0) return { ok: false, etapa: "build", detalle: build.stdout };
 
-  const replay = await sh(
+  const r = await sh(
     s,
     [
       "mkdir -p .gate/tools && git show origin/main:tools/replay.py > .gate/tools/replay.py",
       "ln -sf ../experimentos.jsonl .gate/experimentos.jsonl && ln -sfn ../material .gate/material",
-      "kill $(lsof -ti tcp:3111) 2>/dev/null; true",
-      "(PORT=3111 TEAM_TOKEN=test-token node server.mjs > /tmp/srv.log 2>&1 & echo $! > /tmp/srv.pid)",
-      "for i in $(seq 1 30); do curl -s localhost:3111/health >/dev/null && break; sleep 1; done",
-      "python3 .gate/tools/replay.py http://localhost:3111 > /tmp/replay.log 2>&1; rc=$?",
-      "kill $(cat /tmp/srv.pid); tail -60 /tmp/replay.log; exit $rc",
+      ...ARRANCAR,
+      "python3 .gate/tools/replay.py http://localhost:3111 > /tmp/replay.log 2>&1; rp=$?",
+      `${E2E}; ee=$?`,
+      PARAR,
+      'echo "== replay (exit $rp)"; tail -40 /tmp/replay.log; echo "== e2e (exit $ee)"; tail -60 /tmp/e2e.log',
+      '[ $rp -eq 0 ] && [ $ee -eq 0 ]',
     ].join("; "),
   );
-  return { ok: replay.exitCode === 0, etapa: "replay", detalle: replay.stdout };
+  return { ok: r.exitCode === 0, etapa: "replay+e2e", detalle: r.stdout };
 }
 
 // Filas de origin/main idénticas en el log actual (ignorando `conclusion`, que concluir sí puede añadir).

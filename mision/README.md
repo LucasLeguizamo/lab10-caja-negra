@@ -19,14 +19,22 @@ schedules/vigia.md (cron "15 * * * *", UTC)
        3. reclamar  ──► crea la rama mision/<slug>-<fecha> en GitHub (candado entre sesiones)
        4. explorador (mismo modelo) ──► sondear/concluir vía probe.py → spec/preguntas.md + spec/especificacion.md
        │                              informe Observado (ids) / Inferido / Desconocido
-       5. implementador (mismo modelo) ──► lib/service.ts → verificar (hasta 3 intentos)
-       6. publicar ──► verificar de nuevo → commit + push → PR en borrador ([SIN PARIDAD] si no pasa)
-       7. bitácora ◄── una línea: fecha, slug, rama, PR, gasto
+       5. tester (mismo modelo) ──► tests/<slug>.e2e.ts (tester-army/e2e): un test por regla observada, con ids
+       │                         deben FALLAR antes de implementar → fijar_tests (commit; desde aquí tests/ no cambia)
+       6. implementador (mismo modelo) ──► lib/service.ts → correr_e2e / verificar (hasta 3 intentos)
+       7. publicar ──► verificar de nuevo → commit + push → PR en borrador ([SIN PARIDAD] si no pasa)
+       8. bitácora ◄── una línea: fecha, slug, rama, PR, gasto
 ```
 
-**Pruebas.** Las seqs `m-...` que registra el explorador en `experimentos.jsonl` son los tests de la misión.
-`verificar` reproduce **todo** el log (viejo y nuevo) contra un servidor arrancado de cero con
-`tools/replay.py`, con las mismas reglas que el evaluador. No hay un segundo framework de tests.
+**Pruebas, en dos capas:**
+- **Replay del log:** `tools/replay.py` reproduce **todo** `experimentos.jsonl` (viejo y las seqs `m-...` de la
+  misión) contra un servidor de cero, con las reglas del evaluador. Prueba que no se rompió nada.
+- **Suite e2e** (`tests/*.e2e.ts`, [tester-army/e2e](https://github.com/tester-army/e2e) 0.19.0): tests legibles por
+  regla, con ids. Solo tests de API (`fetch` + matchers): sin navegador, sin agente, sin modelo, deterministas. La
+  base (`contrato`, `ejemplos`) cubre el contrato del README y los 20 ejemplos; cada misión añade `tests/<slug>.e2e.ts`.
+  El tester los escribe **antes** de implementar y comprueba que fallan; el implementador los hace pasar sin tocarlos.
+
+Local: `E2E_BASE_URL=http://localhost:3111 pnpm e2e` en la raíz, con **Node ≥ 24.8** (`fnm exec --using=24 pnpm e2e`).
 
 ## Piezas
 
@@ -37,10 +45,11 @@ schedules/vigia.md (cron "15 * * * *", UTC)
 | `agent/schedules/vigia.md` | Una sesión por hora (minuto 15 UTC). |
 | `agent/tools/vigia.ts` | Corre `tools/watch.py` y `tools/sondeo_comandos.py`. Un crash (sin línea de resumen) es error, no "cambio". No sondea si hay una misión viva (ver Candado). |
 | `agent/tools/reclamar.ts` | Candado: rama `mision/<slug>-<AAAAMMDD-HHMM>` con un commit vacío de reclamo. Si dos sesiones reclaman a la vez, el segundo push no es fast-forward y falla. |
-| `agent/tools/publicar.ts` | Compuerta → commit de `lib spec experimentos.jsonl` (no `tools/`) → push → PR borrador vía API. |
-| `agent/tools/verificar.ts` | Compuerta determinista (`lib/caja.ts`): regla 2 por grep; el log solo crece respecto a `origin/main`; build limpio (`rm -rf .next`, con exit code real); servidor de cero en :3111; **`replay.py` de `origin/main`**, no el del sandbox. |
+| `agent/tools/publicar.ts` | Compuerta → commit de `lib spec tests experimentos.jsonl` (no `tools/`) → push → PR borrador vía API. |
+| `agent/tools/verificar.ts` | Compuerta determinista (`lib/caja.ts`): regla 2 por grep; el log solo crece respecto a `origin/main`; `tests/` intactos desde el commit del tester (`.gate/tests.sha`); build limpio (`rm -rf .next`, con exit code real); servidor de cero en :3111; **`replay.py` de `origin/main`**, no el del sandbox; suite e2e completa sobre el mismo servidor. |
 | `agent/subagents/explorador/` | Solo `sondear`, `concluir`, read/write/grep/glob. **Sin bash**: no puede hablar con el original fuera de probe.py. |
-| `agent/subagents/implementador/` | Bash + `verificar`. Comparte el sandbox (`defineParentSandbox`). |
+| `agent/subagents/tester/` | Especialista e2e. `correr_e2e`, `fijar_tests`, read/write/grep/glob. Sin bash ni acceso al original. Comparte el sandbox. |
+| `agent/subagents/implementador/` | Bash + `correr_e2e` + `verificar`. Comparte el sandbox (`defineParentSandbox`). |
 | `agent/memory/bitacora.ts` | Memoria entre sesiones (ver abajo). |
 | `agent/sandbox.ts` | Vercel Sandbox: snapshot con el repo clonado + `pnpm install`; cada sesión hace `git reset --hard origin/main`. |
 | `agent/lib/red.ts`, `lib/caja.ts` | Política de red y operaciones sobre el repo. Todos los tools pasan por aquí. |
@@ -111,6 +120,15 @@ siendo propias. Conviene confirmar con el reto que un agente propio sobre un fra
    `curl -X POST localhost:2000/eve/v1/dev/schedules/vigia`.
 5. `pnpm exec eve deploy`: el schedule se convierte en un Vercel Cron.
 
+**Proyecto de Vercel propio, separado del reemplazo.** Si se usa la integración con Git, el proyecto del agente tiene
+*Root Directory* = `mision`. No se juntan en un proyecto con `services`:
+- el reemplazo debe conservar **todas** sus rutas iguales al original, y `/eve/*` publicaría eve donde el original da
+  404 E404;
+- un build de eve fallido no debe tumbar el servicio que se evalúa;
+- el agente no llama al reemplazo desplegado. Su `localhost:3111` es el candidato que construye **dentro del sandbox**
+  con el parche sin mergear. Un binding al reemplazo desplegado probaría el código equivocado y le mandaría `/__reset`
+  y cientos de requests al servicio que se evalúa. Por eso no hay bindings.
+
 ## Límites conocidos (y cómo subirlos)
 
 - **La paridad con todo el log es imposible si el original *cambia* algo existente.** Las filas viejas (canarios,
@@ -140,6 +158,9 @@ siendo propias. Conviene confirmar con el reto que un agente propio sobre un fra
   implementador a un modelo más fuerte con `MISION_MODELO` o un `modelo()` propio en su `agent.ts`.
 - **La ventana se declara a mano (200k).** eve no tiene metadata de modelos fuera del AI Gateway. El modelo admite
   1M; se declara menos para que compacte antes.
+- **Tests fijados, pero en el sandbox.** `.gate/tests.sha` vive en el sandbox: un bash decidido del implementador
+  podría reescribirlo. El PR muestra el diff de `tests/` de todos modos; revísalo antes de mergear.
+- **Node ≥ 24.8 para e2e.** El `prepare` del sandbox instala el último 24 si la imagen trae uno anterior.
 - **Clasificación del coordinador.** Si se equivoca, el costo es un PR en borrador que una persona cierra. La compuerta
   es determinista y no depende del modelo.
 

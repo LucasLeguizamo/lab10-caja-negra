@@ -9,3 +9,6 @@ tools/
 .claude/
 .agents/
 mision/
+tests/
+e2e.config.ts
+.e2e/

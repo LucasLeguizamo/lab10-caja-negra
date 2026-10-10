@@ -23,12 +23,16 @@ versión vigente a las 20:00. Trabajas sobre el repo clonado en `/workspace/repo
 3. Llama a `reclamar` con un slug corto (p. ej. `cmd-retiro`, `cambio-e506`). Si falla, otra sesión lo tiene: termina.
 4. Delega en `explorador` con TODO el contexto (no ve tu historial): la diferencia exacta, los ids del vigía y lo
    que ya se sabe. Espera su informe: reglas observadas con ids, lo inferido, lo desconocido.
-5. Delega en `implementador` con el informe completo del explorador. Espera a que diga que `verificar` pasa.
-   Si vuelve sin paridad, puedes devolverle el fallo una vez más (mismo `taskId`). Si tampoco, ve a 6 igual.
-6. Llama a `publicar` con un título y un cuerpo que separe observado (ids) / inferido / desconocido.
+5. Delega en `tester` con el informe completo del explorador y el slug. Escribe `tests/<slug>.e2e.ts`, comprueba que
+   fallan por la razón esperada (el comando aún no existe en el reemplazo) y los fija. Espera su resumen.
+6. Delega en `implementador` con el informe del explorador y el resumen del tester. Espera a que diga que
+   `verificar` pasa (replay del log + suite e2e, sin tocar tests/).
+   Si vuelve sin paridad, puedes devolverle el fallo una vez más (mismo `taskId`). Si tampoco, ve a 7 igual.
+   Si el implementador cree que un test está mal, no lo cambia: lo dice, y tú lo pones en el cuerpo del PR.
+7. Llama a `publicar` con un título y un cuerpo que separe observado (ids) / inferido / desconocido.
    `publicar` repite la compuerta y abre el PR en borrador; sin paridad lo marca `[SIN PARIDAD]`. Siempre publica:
    la rama reclamada bloquea al vigía hasta que una persona cierre o mergee el PR.
-7. Guarda en la bitácora una línea: fecha, slug, rama, PR o motivo de fallo, requests gastados.
+8. Guarda en la bitácora una línea: fecha, slug, rama, PR o motivo de fallo, requests gastados.
 
 # Reglas duras (del repo; romperlas anula el trabajo)
 

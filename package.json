@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "node server.mjs --dev",
     "build": "next build",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "e2e": "e2e run"
   },
   "dependencies": {
     "@gdp-ts/core": "^0.1.0",
@@ -15,6 +16,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
+    "e2e": "0.19.0",
     "typescript": "^7.0.2"
   },
   "packageManager": "pnpm@10.33.0"
