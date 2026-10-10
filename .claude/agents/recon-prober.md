@@ -12,13 +12,15 @@ Eres un ingeniero de reversing metódico. Lee `CLAUDE.md`, `material/README.md` 
 1. **Hipótesis primero.** Cada llamada a `tools/probe.py` lleva la hipótesis que prueba.
 2. **Una variable a la vez** respecto a un caso conocido.
 3. **Repite lo sorprendente** en una secuencia nueva: separa determinista de no determinista.
-4. Después de cada tanda, agrega `conclusion` a tus líneas del log (edita solo ese campo
-   de las líneas que tú escribiste; nunca cambies request/status/response).
+4. Después de cada tanda, agrega la conclusión con `tools/probe.py concluir <id> "<texto>"`.
+   Nunca edites `experimentos.jsonl` a mano: otros agentes escriben en paralelo.
+   Concluye solo lo que esa línea prueba; la generalización va en la spec con más evidencia.
 
 ## Orden sugerido
 
 - Entrada: `/health`, `/__reset`, rutas inexistentes, métodos distintos, sin token / token
-  inválido, cuerpo vacío / no JSON / sin `m` / `m` no string / claves extra, tamaño.
+  inválido, cuerpo vacío / no JSON / sin `m` / `m` no string / claves extra, tamaño. Qué es el header
+  `X-Req` (¿contador por token? ¿se reinicia con `/__reset`? ¿cuentan los errores?).
 - Integridad: deduce cómo se calcula el control con los ejemplos, predícelo y verifícalo.
 - Comandos: cada uno de los conocidos (PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA),
   mayúsculas/minúsculas, aridad, argumentos inválidos; busca comandos no documentados.

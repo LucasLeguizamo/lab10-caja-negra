@@ -4,8 +4,10 @@
   probe.py seq <seq> <hipotesis> <m> [<m> ...]          POST /__reset y luego cada m por POST /msg
   probe.py raw <seq> <hipotesis> <METHOD> <path> [body]  request arbitrario (body crudo, sin reset)
         [--no-auth | --token X]                          probar autenticación
+  probe.py concluir <id> <texto>                         agrega la conclusión a una línea (nunca editar el log a mano)
 
-Token: CAJA_TOKEN en .env (uno por explorador: cada token tiene su propio estado).
+Token: CAJA_TOKEN en .env, o CAJA_TOKEN=<token> delante del comando (uno por explorador:
+cada token tiene su propio estado).
 """
 import argparse
 import fcntl
@@ -63,6 +65,20 @@ def log(entry):
     return entry
 
 
+def conclude(i, text):
+    with open(LOG, "r+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)  # mismo lock que log(): no se pierden líneas de otros agentes
+        rows = [json.loads(line) for line in f if line.strip()]
+        hit = [r for r in rows if r["id"] == i]
+        if not hit:
+            sys.exit(f"no existe id {i}")
+        hit[0]["conclusion"] = text
+        f.seek(0)
+        f.truncate()
+        f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    print(json.dumps(hit[0], ensure_ascii=False))
+
+
 def call(seq, hip, method, path, body, token):
     status, resp, h, ms = send(method, path, body, token)
     try:
@@ -89,7 +105,12 @@ def main():
     r.add_argument("seq"); r.add_argument("hipotesis"); r.add_argument("method"); r.add_argument("path")
     r.add_argument("body", nargs="?")
     r.add_argument("--no-auth", action="store_true"); r.add_argument("--token")
+    c = sub.add_parser("concluir")
+    c.add_argument("id", type=int); c.add_argument("texto")
     a = p.parse_args()
+
+    if a.cmd == "concluir":
+        return conclude(a.id, a.texto)
 
     token = os.environ.get("CAJA_TOKEN")
     if a.cmd == "seq":

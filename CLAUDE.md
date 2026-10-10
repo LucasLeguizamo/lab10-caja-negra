@@ -51,6 +51,14 @@ python3 tools/probe.py raw s2 "ruta inexistente sin token" GET /nada --no-auth
 ```
 
 `seq` hace `/__reset` primero (también queda registrado). Usa nombres de `seq` únicos y descriptivos.
+Token por agente: `CAJA_TOKEN=<token> python3 tools/probe.py ...`.
+Conclusiones: `python3 tools/probe.py concluir <id> "<texto>"`. **Nunca editar `experimentos.jsonl` a mano.**
+Paridad: `python3 tools/replay.py http://localhost:3000` (de parity-verifier).
+
+## Skills del repo
+
+Instaladas con `pnpm dlx skills add` / `pnpm dlx autoskills` (lock: `skills-lock.json`).
+Relevantes: `next-best-practices`, `nodejs-backend-patterns`, `typescript-advanced-types`, `gdp-ts`.
 
 ## Stack del reemplazo
 

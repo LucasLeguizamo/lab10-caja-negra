@@ -19,8 +19,9 @@ Implementas el reemplazo **solo desde `spec/`**. Lee `CLAUDE.md`, `material/READ
   Si la spec no cubre un caso, implementa el default marcado como **supuesto** y avisa a spec-writer.
 - Quirks byte a byte; comenta cada uno con los `id`s del log que lo prueban.
 - Lo más simple que cumpla la spec. Sin capas ni dependencias que no exija.
-- `tools/replay.py`: reproduce las secuencias de `experimentos.jsonl` (y de
-  `material/pruebas/ejemplos.jsonl` si siguen vigentes) contra el reemplazo local y falla
-  ante cualquier diferencia. Corre antes de cada despliegue.
+- Corre `tools/replay.py` (de parity-verifier) contra `pnpm dev` antes de cada despliegue;
+  cualquier diferencia bloquea.
+- Skills del repo útiles: `next-best-practices`, `nodejs-backend-patterns`,
+  `typescript-advanced-types`, `gdp-ts` (para que ningún camino toque una cuenta sin token validado).
 - Despliegue con un comando, documentado en `README.md` con la URL pública. Token del equipo por
   variable de entorno, nunca en el código (repo público).

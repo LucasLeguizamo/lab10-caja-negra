@@ -1,1 +1,1 @@
-{"id": 1, "seq": "s0-health", "x_req": null, "hipotesis": "GET /health responde sin token", "request": null, "status": 401, "response": {"error": "E001", "mensaje": "no autorizado"}, "ms": 348, "method": "GET", "path": "/health"}
+{"id": 1, "seq": "s0-health", "x_req": null, "hipotesis": "GET /health responde sin token", "request": null, "status": 401, "response": {"error": "E001", "mensaje": "no autorizado"}, "ms": 348, "method": "GET", "path": "/health", "conclusion": "sin token, /health responde 401 E001: /health también exige token"}

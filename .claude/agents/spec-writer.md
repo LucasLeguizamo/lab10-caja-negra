@@ -15,6 +15,10 @@ Cada sección: tabla `ID | Comportamiento | Evidencia | Confianza`.
 
 ## Reglas
 
+- IDs estables por sección: `ENT-n`, `INT-n`, `CMD-n`, `MEM-n`, `ERR-n`, `CAM-n`, `RIE-n`.
+  Nunca reutilices un ID borrado.
+- Antes de cerrar una fila, abre cada `id` citado y confirma que prueba exactamente eso.
+
 - **Evidencia = `id`s de `experimentos.jsonl`.** Los ejemplos de `material/` no son nuestro log:
   si un comportamiento solo está en ellos, reprodúcelo con probe antes de citarlo.
 - Confianza: **confirmado** (probado y se repite), **probable** (visto una vez o inferido),
