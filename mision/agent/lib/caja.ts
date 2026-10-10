@@ -2,7 +2,7 @@
 import type { SandboxSession } from "eve/sandbox";
 
 import { environment } from "../sandbox";
-import { politica, REPO_DIR, TOKEN_MARCADOR, type Apertura } from "./red";
+import { politica, REPO_DIR, requerir, TOKEN_MARCADOR, type Apertura } from "./red";
 
 type Ctx = { getSandbox: (env: typeof environment) => Promise<Awaited<ReturnType<typeof environment.open>>> };
 
@@ -27,13 +27,72 @@ export async function conRed<T>(ctx: Ctx, abrir: Apertura[], fn: (s: SandboxSess
 const ENV_PROBE = { CAJA_TOKEN: TOKEN_MARCADOR };
 const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
+// Un paso de workflow muere a los 300 s (Vercel Hobby) y se re-entrega: el 10/10 a las 17:27 un sondear de 40 mensajes
+// contra un original lento lo pasó. probe.py espera hasta 10 s por request (timeout fijo, sin variable de entorno), así
+// que se limita el número de mensajes y, por si acaso, el proceso entero con `timeout`. Las filas ya escritas quedan.
+export const MAX_MENSAJES_SEQ = 12;
+const TOPE_SEQ_S = 140;
+
 /** Una seq vía probe.py (reset + mensajes). Devuelve las filas nuevas del log. */
 export async function seq(ctx: Ctx, nombre: string, hipotesis: string, mensajes: string[]) {
   return conRed(ctx, ["original"], async (s) => {
-    const r = await sh(s, `python3 tools/probe.py seq -- ${[nombre, hipotesis, ...mensajes].map(q).join(" ")}`, ENV_PROBE);
+    const r = await sh(
+      s,
+      `timeout ${TOPE_SEQ_S} python3 tools/probe.py seq -- ${[nombre, hipotesis, ...mensajes].map(q).join(" ")}`,
+      ENV_PROBE,
+    );
+    if (r.exitCode === 124) {
+      throw new Error(
+        `el original va lento: seq cortada a ${TOPE_SEQ_S} s (las filas ya registradas quedan en el log; ` +
+          `búscalas con evidencia "${nombre}"). Reintenta una vez con menos mensajes o déjalo en Desconocido.`,
+      );
+    }
     if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
     return r.stdout.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
   });
+}
+
+// Lector compacto del log (nunca entero en el contexto del modelo): filas desde la versión vigente que casan con PAT.
+const EVIDENCIA = `
+import json, os, re
+try:
+    vig = json.load(open("tools/version_vigente.json"))["desde_id"]
+except Exception:
+    vig = 1
+desde = int(os.environ.get("DESDE") or vig)
+pat = re.compile(os.environ["PAT"])
+filas = []
+for l in open("experimentos.jsonl", encoding="utf-8"):
+    if not l.strip():
+        continue
+    r = json.loads(l)
+    if r["id"] < desde or not pat.search(l):
+        continue
+    req = r.get("request")
+    f = {"id": r["id"], "seq": r.get("seq"), "m": req.get("m") if isinstance(req, dict) else req,
+         "status": r.get("status"), "resp": json.dumps(r.get("response"), ensure_ascii=False)[:300]}
+    if r.get("method"):
+        f["method"], f["path"] = r["method"], r.get("path")
+    if r.get("conclusion"):
+        f["concl"] = r["conclusion"][:200]
+    filas.append(f)
+n = int(os.environ["MAX"])
+print(json.dumps({"desde": desde, "total": len(filas), "filas": filas[-n:]}, ensure_ascii=False))
+`;
+
+export async function evidencia(ctx: Ctx, patron: string, desde: number | undefined, max: number) {
+  const s = await ctx.getSandbox(environment);
+  const r = await sh(s, `python3 -c "$PY"`, { PY: EVIDENCIA, PAT: patron, DESDE: desde ? String(desde) : "", MAX: String(max) });
+  if (r.exitCode !== 0) throw new Error((r.stderr || r.stdout).slice(-1500));
+  return JSON.parse(r.stdout) as { desde: number; total: number; filas: Record<string, unknown>[] };
+}
+
+/** Tamaño en bytes de un archivo del sandbox (0 si no existe). */
+export async function tamano(ctx: Ctx, ruta: string) {
+  const s = await ctx.getSandbox(environment);
+  const p = ruta.startsWith("$HOME") ? `"$HOME"${q(ruta.slice(5))}` : q(ruta);
+  const r = await sh(s, `wc -c < ${p} 2>/dev/null || echo 0`);
+  return Number(r.stdout.trim()) || 0;
 }
 
 export async function concluir(ctx: Ctx, id: number, texto: string) {
@@ -49,8 +108,10 @@ export async function concluir(ctx: Ctx, id: number, texto: string) {
  */
 export async function vigia(ctx: Ctx) {
   return conRed(ctx, ["original"], async (s) => {
-    const watch = await sh(s, "python3 tools/watch.py", ENV_PROBE);
-    const sondeo = await sh(s, "python3 tools/sondeo_comandos.py", ENV_PROBE);
+    // ~70 requests: ~25 s normalmente. Con un original lento (10 s por request) pasaría los 300 s del paso: `timeout`
+    // lo corta, el script no llega a su resumen y cuenta como "vigía caído" (reintenta en la próxima pasada).
+    const watch = await sh(s, "timeout 100 python3 tools/watch.py", ENV_PROBE);
+    const sondeo = await sh(s, "timeout 70 python3 tools/sondeo_comandos.py", ENV_PROBE);
     const cayo = (r: { exitCode: number; stdout: string; stderr: string }, resumen: string) =>
       r.exitCode !== 0 && !`${r.stdout}${r.stderr}`.includes(resumen);
     if (cayo(watch, "vigía:") || cayo(sondeo, "sondeo:")) {
@@ -58,8 +119,12 @@ export async function vigia(ctx: Ctx) {
     }
     // ponytail: rate-limit detectado por texto; watch.py no expone el campo infra en sus DIFF.
     const infra = /infra|rate-limit/i.test(`${watch.stdout}${watch.stderr}${sondeo.stderr}`);
+    const cambios = watch.exitCode === 1 || sondeo.exitCode === 1;
+    // Pasada limpia: nada que leer. El root vive todo el día y reenvía su historial en cada llamada: 30 pasadas con
+    // 4.000 caracteres del canario cada una eran ~30k tokens muertos en cada turno.
+    if (!cambios && !infra) return { cambios: false as const, posibleRateLimit: false };
     return {
-      cambios: watch.exitCode === 1 || sondeo.exitCode === 1,
+      cambios,
       posibleRateLimit: infra,
       watch: watch.stdout.slice(-4000),
       comandosNuevos: sondeo.stdout.trim().split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l)),
@@ -70,7 +135,8 @@ export async function vigia(ctx: Ctx) {
 // Un paso de workflow en Vercel muere a los 300 s (Hobby) y se re-ejecuta: build + replay + e2e no caben. Lo largo
 // corre desacoplado en el sandbox y la herramienta espera como mucho ESPERA_MS; si no terminó, devuelve pendiente y el
 // agente vuelve a llamar (la re-entrega del paso también cae aquí y espera al mismo proceso, no lanza otro).
-const ESPERA_MS = 200_000;
+// 150 s y no 200: el paso incluye además la llamada al modelo que pidió la herramienta (30-90 s con contexto grande).
+const ESPERA_MS = 150_000;
 type Largo = { hecho: true; rc: number; salida: string } | { hecho: false };
 
 async function largo(s: SandboxSession, nombre: string, script: string): Promise<Largo> {
@@ -138,14 +204,73 @@ export async function correrE2e(ctx: Ctx) {
  */
 export async function fijarTests(ctx: Ctx, resumen: string) {
   const s = await ctx.getSandbox(environment);
+  // El log de la exploración va en el mismo commit: es la evidencia más cara de la misión (requests al original).
   const r = await sh(
     s,
-    "git add tests && git -c user.name=mision-caja -c user.email=mision@caja.local commit -m \"$MSG\" && " +
-      "mkdir -p .gate && git rev-parse HEAD | tee .gate/tests.sha",
+    "git add tests experimentos.jsonl && git -c user.name=mision-caja -c user.email=mision@caja.local commit -m \"$MSG\" && " +
+      "mkdir -p .gate && git rev-parse HEAD > .gate/tests.sha && cat .gate/tests.sha",
     { MSG: `test(mision): ${resumen}` },
   );
   if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
-  return { sha: r.stdout.trim() };
+  // Respaldo: si la sesión muere después (el 10/10 murió a las 17:52 sin haber empujado nada), tests y log ya están en
+  // GitHub. La punta sigue sin ser feat(mision): para el vigía la misión sigue en curso, igual que antes.
+  const respaldo = await conRed(ctx, ["github"], async (g) => {
+    const rama = (await sh(g, "git rev-parse --abbrev-ref HEAD")).stdout.trim();
+    if (!rama.startsWith("mision/")) return `sin respaldo: rama ${rama}`;
+    const p = await sh(g, `git push -q origin ${rama}`);
+    return p.exitCode === 0 ? `push ${rama}` : `push falló: ${p.stderr.slice(-300)}`;
+  });
+  return { sha: r.stdout.trim(), respaldo };
+}
+
+// Solo esto puede cambiar una misión. Ni tools/ (la compuerta usa el replay.py de main, y no debe poder cambiarse
+// desde la misión), ni .env, material/ o configuración de despliegue.
+const RUTAS = "lib spec tests openapi.yaml docs experimentos.jsonl";
+const REPO = "LucasLeguizamo/lab10-caja-negra";
+
+/** Commit de RUTAS en la rama mision/* actual, push y PR en borrador contra su base. */
+export async function abrirPr(ctx: Ctx, titular: string, texto: string) {
+  const rama = await conRed(ctx, ["github"], async (s) => {
+    const cur = (await sh(s, "git rev-parse --abbrev-ref HEAD")).stdout.trim();
+    if (!cur.startsWith("mision/")) throw new Error(`rama ${cur}: falta reclamar la misión`);
+    const r = await sh(
+      s,
+      // `git add` de rutas que no existen falla: solo las que hay.
+      `git add $(for p in ${RUTAS}; do [ -e "$p" ] && echo "$p"; done) && ` +
+        `git -c user.name=mision-caja -c user.email=mision@caja.local commit --allow-empty -m "$MSG" && git push origin ${cur}`,
+      { MSG: `feat(mision): ${titular}` },
+    );
+    if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
+    const base = (await sh(s, "cat .gate/base 2>/dev/null || echo main")).stdout.trim();
+    return { cur, base };
+  });
+
+  const res = await fetch(`https://api.github.com/repos/${REPO}/pulls`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${requerir("GITHUB_TOKEN")}`, accept: "application/vnd.github+json" },
+    body: JSON.stringify({ title: titular, head: rama.cur, base: rama.base, draft: true, body: texto }),
+  });
+  if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
+  const pr = (await res.json()) as { html_url: string };
+  return { rama: rama.cur, base: rama.base, pr: pr.html_url };
+}
+
+/**
+ * Red de seguridad (hook rescate): la sesión del root falló (p. ej. SESSION_TOKEN_LIMIT_REACHED, que en una sesión de
+ * schedule es terminal) con una misión reclamada y sin publicar. Publica lo que haya como [SIN PARIDAD], sin compuerta
+ * (no cabe en un hook y ya no hay agente que la lea), para que una persona lo revise. Idempotente: los hooks son
+ * at-least-once; si la punta ya es feat(mision) no hace nada.
+ */
+export async function rescatar(ctx: Ctx, motivo: string) {
+  const s = await ctx.getSandbox(environment);
+  const cur = (await sh(s, "git rev-parse --abbrev-ref HEAD")).stdout.trim();
+  if (!cur.startsWith("mision/")) return { rescate: false, motivo: `rama ${cur}: no hay misión reclamada` };
+  const punta = (await sh(s, "git log -1 --format=%s")).stdout.trim();
+  if (punta.startsWith("feat(mision)")) return { rescate: false, motivo: "ya publicada" };
+  const texto =
+    `La sesión del agente terminó a mitad de misión (${motivo}). Se publica lo que había en el sandbox, **sin pasar ` +
+    "la compuerta**: tests fijados (si los hubo), spec/mision-*.md y el log de la exploración. Revisar y completar a mano.";
+  return { rescate: true, ...(await abrirPr(ctx, `[SIN PARIDAD] rescate: sesión cortada en ${cur.slice(7, 47)}`, texto)) };
 }
 
 /**
