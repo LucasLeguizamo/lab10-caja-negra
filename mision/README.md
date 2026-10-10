@@ -118,10 +118,8 @@ siendo propias. Conviene confirmar con el reto que un agente propio sobre un fra
   puede pasar la compuerta con **comandos nuevos** que no tocan filas viejas. Un cambio de comportamiento sale
   `[SIN PARIDAD]` y lo decide una persona. Arreglo: que `replay.py` acepte una lista de seqs superadas (p. ej.
   `--obsoletas s-watch-1100,...`) y que la misión declare cuáles reemplaza.
-- **Hoy `verificar` fallaría siempre:** `replay.py` da 750/752 porque los ids 598 y 601 no tienen `body_raw`. Es un
-  fallo del replay, no del servicio. Hay que arreglar `replay.py` en main antes de activar el agente.
-- **El remoto no tiene lo que el agente usa:** `mision/`, `tools/sondeo_comandos.py` y 76 filas del log (656-731)
-  están solo en local. Sin commitearlas, el vigía se cae y la misión reutilizaría ids que chocan.
+- **El sandbox clona `origin/main`:** el agente solo ve lo que está pusheado (`mision/`, `tools/sondeo_comandos.py`,
+  el log al día). Antes de cada activación: `git push`. Un log local sin pushear choca en ids con la misión.
 
 - **Colisión de ids.** `probe.py` numera con el número de líneas + 1 sobre su copia del log. Si una persona sondea
   en local mientras corre una misión, los dos logs reutilizan ids y el PR choca en `experimentos.jsonl`.
