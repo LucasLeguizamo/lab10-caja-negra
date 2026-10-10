@@ -28,7 +28,8 @@ export const TTL_CANDADO_S = 2 * 60 * 60;
 // Hora local del reto: UTC-5. Última pasada a las 19:15: después, una misión no llega a revisarse antes de las 20:00.
 const UTC_OFFSET_H = -5;
 const CORTE_LOCAL = { h: 19, m: 15 };
-const ENTRE_PASADAS_S = 60 * 60;
+// 20 min: detectar antes un cambio de versión. Cada pasada cuesta ~70 requests: ~30 pasadas/día << 8.000.
+const ENTRE_PASADAS_S = 20 * 60;
 
 /** Segundos hasta la próxima pasada del vigía, o null si ya no cabe otra hoy. */
 export function proximaPasadaS(ahora = new Date()): number | null {

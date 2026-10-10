@@ -35,9 +35,13 @@ Si es null, ya no cabe otra hoy: termina con `no_reply`. Nunca calcules la hora 
    Si falla, otra sesión lo tiene: ve al bucle.
    Al delegar (pasos 4-6), di qué cubren las misiones publicadas para que nadie las rehaga: solo lo no cubierto.
 4. Delega en `explorador` con TODO el contexto (no ve tu historial): la diferencia exacta, los ids del vigía y lo
-   que ya se sabe. Espera su informe: reglas observadas con ids, lo inferido, lo desconocido.
-5. Delega en `tester` con el informe completo del explorador y el slug. Escribe `tests/<slug>.e2e.ts`, comprueba que
-   fallan por la razón esperada (el comando aún no existe en el reemplazo) y los fija. Espera su resumen.
+   que ya se sabe. Lo que ya tiene filas en el log de la versión vigente es evidencia: dile que lo cite, **no** le
+   pidas re-sondearlo. Espera su informe: reglas observadas con ids, lo inferido, lo desconocido.
+5. **En una sola respuesta, dos llamadas en paralelo** (escriben en carpetas distintas):
+   - `tester` con el informe completo del explorador y el slug: escribe `tests/<slug>.e2e.ts`, comprueba que fallan
+     por la razón esperada y los fija;
+   - `explorador` con su mismo `taskId`: "escribe ahora spec/preguntas.md y spec/especificacion.md con tu informe".
+   Espera a los dos antes del paso 6.
 6. Delega en `implementador` con el informe del explorador y el resumen del tester. Espera a que diga que
    `verificar` pasa (replay del log + suite e2e, sin tocar tests/).
    Si vuelve sin paridad, puedes devolverle el fallo una vez más (mismo `taskId`). Si tampoco, ve a 7 igual.

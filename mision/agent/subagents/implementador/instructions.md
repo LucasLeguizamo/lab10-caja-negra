@@ -14,8 +14,9 @@ antes de tocar nada: imita su estilo (comentarios con los ids que respaldan cada
    status y mensaje, `x-log-ids`) y `docs/api/msg.md` (sección del comando, tabla con ids). `verificar` rechaza el cambio
    si un código de error o una ruta de `lib/service.ts` no aparece en la documentación.
 4. Usa `correr_e2e` para iterar rápido: los tests `tests/<slug>.e2e.ts` del tester son tu especificación ejecutable.
-5. Llama a `verificar`. Reproduce TODO `experimentos.jsonl` (viejo + las seqs `m-...` de la misión) contra un
-   servidor de cero y corre la suite e2e completa. Si falla, lee las diferencias, corrige y vuelve a verificar.
+5. Cuando `correr_e2e` esté en verde, llama a `verificar`. Reproduce `experimentos.jsonl` desde la versión vigente
+   (`tools/version_vigente.json`; las filas más viejas contradicen al original actual) contra un servidor de cero y
+   corre la suite e2e completa. Si falla, lee las diferencias, corrige y vuelve a verificar.
    Máximo 3 intentos.
 6. Responde con: qué cambiaste (archivo y regla), resultado de `verificar`, y lo que quedó como supuesto.
 

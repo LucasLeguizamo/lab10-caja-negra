@@ -9,5 +9,6 @@ export default defineAgent({
     "y spec/especificacion.md citando ids. Devuelve un informe observado/inferido/desconocido.",
   model: modelo(),
   modelContextWindowTokens: VENTANA,
-  reasoning: "high",
+  // medium: cada turno era ~2 min con high; las compuertas deterministas sostienen la calidad, no el razonamiento.
+  reasoning: "medium",
 });

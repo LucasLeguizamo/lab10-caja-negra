@@ -8,5 +8,6 @@ export default defineAgent({
     "lo existente, y no termina hasta que verificar pase (o tras 3 intentos fallidos, con el diagnóstico).",
   model: modelo(),
   modelContextWindowTokens: VENTANA,
-  reasoning: "high",
+  // medium: cada turno era ~2 min con high; las compuertas deterministas sostienen la calidad, no el razonamiento.
+  reasoning: "medium",
 });
