@@ -147,6 +147,8 @@ def auths_for(e, stats):
 
 
 def body_for(e):
+    if "body_raw" in e:  # probe.py lo guarda tal cual cuando el cuerpo no es un objeto JSON
+        return e["body_raw"]
     r = e.get("request")
     if r is None:
         return None
