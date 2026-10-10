@@ -32,9 +32,9 @@ def load_env():
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def send(method, path, body, token, auth_raw=None):
+def send(method, path, body, token, auth_raw=None, content_type=None):
     base = os.environ.get("ORIGINAL_URL", "https://caja-negra-production-c64f.up.railway.app")
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": content_type or "application/json"}
     if auth_raw is not None:
         headers["Authorization"] = auth_raw  # valor crudo del header: otro esquema, vacío, minúsculas...
     elif token is not None:
@@ -81,8 +81,8 @@ def conclude(i, text):
     print(json.dumps(hit[0], ensure_ascii=False))
 
 
-def call(seq, hip, method, path, body, token, auth_raw=None):
-    status, resp, h, ms = send(method, path, body, token, auth_raw)
+def call(seq, hip, method, path, body, token, auth_raw=None, content_type=None):
+    status, resp, h, ms = send(method, path, body, token, auth_raw, content_type)
     try:
         request = json.loads(body) if body is not None else None
     except ValueError:
@@ -90,8 +90,12 @@ def call(seq, hip, method, path, body, token, auth_raw=None):
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")  # para fechar el canario y los cambios de versión
     entry = {"seq": seq, "x_req": h.get("X-Req"), "hipotesis": hip, "request": request,
              "status": status, "response": resp, "ms": ms, "ts": ts}
+    if body is not None and not isinstance(request, dict):
+        entry["body_raw"] = body  # null, "PING;64", vacío...: el replay necesita el cuerpo exacto
     if (method, path) != ("POST", "/msg"):
         entry["method"], entry["path"] = method, path
+    if content_type is not None:
+        entry["content_type"] = content_type  # header Content-Type enviado (por defecto application/json)
     # Modo de auth siempre registrado: replay necesita saber qué se mandó.
     # "team" = CAJA_TOKEN del .env (el valor nunca se escribe: repo público).
     if auth_raw is not None:
@@ -123,6 +127,7 @@ def main():
     r.add_argument("body", nargs="?")
     r.add_argument("--no-auth", action="store_true"); r.add_argument("--token")
     r.add_argument("--auth-raw", help="valor crudo del header Authorization (otro esquema, vacío, minúsculas...)")
+    r.add_argument("--content-type", help="valor del header Content-Type (por defecto application/json)")
     c = sub.add_parser("concluir")
     c.add_argument("id", type=int); c.add_argument("texto")
     a = p.parse_args()
@@ -142,7 +147,7 @@ def main():
                 call(a.seq, a.hipotesis, "POST", "/msg", json.dumps({"m": m}, ensure_ascii=False), token)
     else:
         tok = None if a.no_auth else (a.token if a.token is not None else token)
-        call(a.seq, a.hipotesis, a.method.upper(), a.path, a.body, tok, a.auth_raw)
+        call(a.seq, a.hipotesis, a.method.upper(), a.path, a.body, tok, a.auth_raw, a.content_type)
 
 
 if __name__ == "__main__":
