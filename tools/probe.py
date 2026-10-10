@@ -91,8 +91,16 @@ def call(seq, hip, method, path, body, token, auth_raw=None):
              "status": status, "response": resp, "ms": ms}
     if (method, path) != ("POST", "/msg"):
         entry["method"], entry["path"] = method, path
+    # Modo de auth siempre registrado: replay necesita saber qué se mandó.
+    # "team" = CAJA_TOKEN del .env (el valor nunca se escribe: repo público).
     if auth_raw is not None:
-        entry["auth_sent"] = auth_raw  # qué se mandó realmente en Authorization
+        entry["auth"], entry["auth_sent"] = "raw", auth_raw
+    elif token is None:
+        entry["auth"] = "none"
+    elif any(k.startswith("CAJA_TOKEN") and v == token for k, v in os.environ.items()):
+        entry["auth"] = "team"  # cualquier token real del .env: se registra el modo, no el valor
+    else:
+        entry["auth"], entry["auth_sent"] = "bearer", f"Bearer {token}"  # token inventado
     if h.get("X-Frontier-Infra"):
         entry["infra"] = h["X-Frontier-Infra"]  # respuesta de la infraestructura, no del servicio
         print(f"!! infra: {entry['infra']} — baja el ritmo", file=sys.stderr)
