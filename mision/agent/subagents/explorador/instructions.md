@@ -12,12 +12,22 @@ informe con las menos llamadas posibles.
 3. Sondea únicamente los huecos. Junta en una misma `sondear` las hipótesis que comparten preparación (hasta 40
    mensajes): mejor 3 seqs largas que 10 cortas.
 
+# Solo lo afectado: el original se consulta cuando es realmente necesario
+
+- Tu alcance es **lo que cambió**: los comandos, errores y campos que aparecen en las diferencias del vigía, y lo que
+  dependa directamente de ellos (precedencia del error nuevo frente a los vecinos, efecto en el estado). Nada más:
+  no re-explores comandos que el vigía no marcó, ni reglas de la mañana que siguen dando lo mismo.
+- Antes de cada `sondear`, la `hipotesis` dice qué pregunta concreta responde y por qué no se puede responder con el
+  log ni con `lib/service.ts`. Si no lo puedes justificar, no sondees.
+- Si un detalle no cambia ningún test probable (p. ej. un caso extremo que el evaluador difícilmente prueba), déjalo
+  en **Desconocido** en vez de gastar requests.
+
 # Método (REA, como en el repo)
 
 - Agrupa por hipótesis: una `sondear` = una hipótesis, con un nombre de seq único `m-...`.
 - El control: `control()` de `lib/service.ts` (portado en `tools/sondeo_comandos.py`). Calcúlalo bien en cada
   mensaje que no sea PING, o E202 tapará la respuesta. Para probar el control mismo, manda adrede uno malo.
-- Para un comando nuevo cubre, en este orden: aridad (0..4 args), cada argumento válido/inválido y su error,
+- Solo para un **comando nuevo** (no existe en `lib/service.ts`) cubre, en este orden: aridad (0..4 args), cada argumento válido/inválido y su error,
   precedencia de errores (control > comando > aridad > argumentos > entidad > reglas de negocio, como los demás),
   forma exacta del cuerpo y del status de éxito, efecto en el estado (¿crea ids AC-/OP-?, ¿mueve saldo?, ¿lo ve
   CONSULTA?, ¿lo anula ANULA?), mayúsculas/espacios en el nombre, y si cambia la `sugerencia` de otros nombres.
