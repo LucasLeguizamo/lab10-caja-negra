@@ -7,6 +7,10 @@
 
 Nunca habla con el original. Sale con codigo != 0 si hay cualquier diferencia (con --fail-fast, en la primera).
 
+Version vigente: el original cambia durante el dia y cuenta la version de las 20:00. tools/version_vigente.json
+(`desde_id`) marca la primera fila de la version vigente: las seqs que empiezan antes y los ejemplos de la manana
+contradicen a la version actual, asi que se omiten (se informa cuantas). --todo las reproduce igual (informativo).
+
 Comparacion (como el evaluador): mismo status y mismo cuerpo. Si el esperado es JSON: se parsea el obtenido y se
 compara recursivamente con tipos estrictos (True != 1, 1 != 1.0), claves sin orden, arrays en orden. Si el esperado
 es texto (el log guarda str cuando no era JSON): texto exacto, caracter por caracter, sin parsear el obtenido.
@@ -186,6 +190,15 @@ def main():
     reset_row = {"id": 0, "seq": "ejemplos", "src": "ej", "auth": "team", "method": "POST", "path": "/__reset",
                  "request": None, "status": 200, "response": {"ok": True}}
     groups = list(seqs.items()) + [("ejemplos", [reset_row] + ej)]  # los ejemplos se grabaron "tras empezar de cero"
+    vf = ROOT / "tools/version_vigente.json"
+    desde = json.loads(vf.read_text())["desde_id"] if vf.exists() else 0
+    if desde and "--todo" not in sys.argv:
+        # Cada seq de la version vigente empieza con su propio reset (probe.py seq), asi que omitir las viejas no le
+        # quita estado a ninguna. Los ejemplos son de la manana: su equivalente vigente es el ultimo s-canario-*.
+        viejas = [g for g in groups if g[0] == "ejemplos" or g[1][0]["id"] < desde]
+        groups = [g for g in groups if g not in viejas]
+        print(f"version vigente desde id {desde}: omitidas {len(viejas)} seqs viejas "
+              f"({sum(len(r) for _, r in viejas)} pasos, incluidos los ejemplos de la manana)")
 
     stats = {"inferidas": 0, "infra": 0, "pasos": 0, "ok": 0}
     difs = []
