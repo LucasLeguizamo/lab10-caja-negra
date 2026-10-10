@@ -134,9 +134,12 @@ def main():
     if a.cmd == "seq":
         if not token:
             sys.exit("falta CAJA_TOKEN en .env")
-        call(a.seq, a.hipotesis, "POST", "/__reset", None, token)
-        for m in a.m:
-            call(a.seq, a.hipotesis, "POST", "/msg", json.dumps({"m": m}, ensure_ascii=False), token)
+        # Una seq a la vez por token: otra seq (el canario horario, otro prober) haría reset a mitad.
+        with open(ROOT / ".token.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            call(a.seq, a.hipotesis, "POST", "/__reset", None, token)
+            for m in a.m:
+                call(a.seq, a.hipotesis, "POST", "/msg", json.dumps({"m": m}, ensure_ascii=False), token)
     else:
         tok = None if a.no_auth else (a.token if a.token is not None else token)
         call(a.seq, a.hipotesis, a.method.upper(), a.path, a.body, tok, a.auth_raw)
