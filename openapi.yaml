@@ -1,0 +1,1137 @@
+openapi: 3.1.0
+
+info:
+  title: Caja negra (reemplazo)
+  version: "1.0.0"
+  summary: Documentación del reemplazo de la caja negra del reto 2 (Frontier, lab 10).
+  description: |
+    Descripción OpenAPI del servicio HTTP que el reemplazo reproduce. Fuente: `spec/especificacion.md` (filas `ENT-*`,
+    `INT-*`, `CMD-*`, `MEM-*`, `ERR-*`, `CAM-*`, `RIE-*`) y `lib/service.ts`.
+
+    **Aviso de alcance.** Este documento describe la versión del servicio **observada hasta el id 731 del log**
+    (`experimentos.jsonl`, 2026-10-10T13:00:14-0500). Lo que cuenta en la evaluación es la versión vigente a las 20:00; el log
+    no cubre de 13:00:14 a 20:00 (CAM-1, CAM-5). Todo lo que no está en el log es **supuesto** y se marca así.
+
+    **Este archivo no lo sirve el reemplazo.** El contrato del reto exige que cualquier ruta que no exista en el original
+    (incluida `/openapi.yaml` o `/docs`) responda `404` `{"error":"E404","mensaje":"ruta desconocida"}`. Este YAML y
+    `docs/api/*.md` son solo documentación del repositorio.
+
+    ## Autenticación (ENT-4, ENT-5, ERR-1)
+
+    Header `Authorization: Bearer <token>`. Las tres rutas existentes lo exigen, **incluido `GET /health`** (RIE-8).
+    Sin header, `Bearer ` vacío, token inventado, esquema `Basic`, esquema `bearer` en minúscula (incluso con token
+    válido) -> `401` `{"error":"E001","mensaje":"no autorizado"}`, siempre el mismo cuerpo.
+
+    ## Orden de evaluación a nivel de ruta (ERR-15, ERR-29)
+
+    1. Ruteo (ruta + método exactos): ruta o método no soportado -> `404` E404 **aunque no haya token** (se evalúa antes que la
+       auth). Distingue mayúsculas (`/HEALTH`, `/MSG`), no normaliza la barra final (`/health/`, `/msg/`), `HEAD` da `404` con
+       cuerpo vacío. El query string se ignora (`/msg?x=1` se rutea como `/msg`).
+    2. Autenticación (E001) antes de leer el cuerpo.
+    3. Pipeline de `POST /msg`: ver `x-error-precedence` en esa operación.
+
+    ## Estado
+
+    Estado por token, en memoria (cuentas, operaciones, contadores `AC-`/`OP-`). `POST /__reset` lo vacía, pero **no** reinicia
+    el contador del header `X-Req` (MEM-2). El original afirma (material/README) que cada token tiene su propio estado; no se
+    probó (spec, "Desconocido" de ENT). El reemplazo tiene un único estado, el del token del equipo (`TEAM_TOKEN`).
+
+    ## Rate limit
+
+    El material del reto dice que el original admite 10 req/s y 8.000 req/día por token y que, al excederlo, responde con el
+    header `X-Frontier-Infra: rate-limit` (respuesta de infraestructura, no del servicio). Nunca apareció en el log y el
+    reemplazo no lo implementa (**supuesto**; ver "Desconocido" de la sección 1 de la spec).
+
+    ## Rutas inexistentes
+
+    Ver `x-rutas-desconocidas` (nivel raíz) y `docs/api/rutas-inexistentes.md`.
+
+    Los cuerpos de este documento son exactos, con sus quirks: `recieved` (typo), `"comando desconocido "` (espacio final),
+    `cuentaId` / `cuenta_id` / `operacionId` (claves inconsistentes), campo opcional `sugerencia`, tildes UTF-8.
+  contact:
+    name: Equipo lab10-caja-negra
+  x-spec-source: spec/especificacion.md
+  x-log-coverage: "experimentos.jsonl ids 1-731 (último ts 2026-10-10T13:00:14-0500)"
+
+servers:
+  - url: https://lab10-caja-negra.vercel.app
+    description: Reemplazo desplegado (un solo proceso con estado en memoria).
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: infra
+    description: Salud y reinicio de estado.
+  - name: msg
+    description: Mensajes de negocio (PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA).
+
+x-rutas-desconocidas:
+  descripcion: >-
+    Cualquier combinación ruta+método distinta de GET /health, POST /__reset y POST /msg (incluida la raíz /) responde 404
+    {"error":"E404","mensaje":"ruta desconocida"}, con o sin token, con token válido o inválido, para cualquier método, y con o sin
+    cuerpo (también con cuerpo de ~8300 bytes: 404, no 413). No lleva X-Req ni cuenta para X-Req. HEAD (sobre /msg y /health)
+    da 404 con cuerpo vacío.
+  status: 404
+  cuerpo:
+    error: E404
+    mensaje: ruta desconocida
+  cuerpo_head: ""
+  x-spec-ids: [ENT-1, ENT-6, ENT-7, ENT-8, ENT-9, ERR-2, ERR-15, MEM-3]
+  x-log-ids: [29, 35, 44, 45, 69, 72, 73, 74, 75, 77, 89, 90, 91, 92, 93, 103, 104, 105, 106, 574, 575, 578, 611, 613, 614, 615, 617]
+  casos_observados:
+    - "GET /nada, POST /nada (con y sin token): 29, 72, 73, 103, 104"
+    - "GET / : 74"
+    - "GET /msg, POST /health, GET /__reset: 35, 44, 45"
+    - "PUT, DELETE, PATCH, OPTIONS sobre /msg: 89, 90, 91, 92, 106"
+    - "mayúsculas: GET /HEALTH sin token (77) y con token inválido (105); POST /MSG con token válido (613)"
+    - "barra final: GET /health/ sin token (75) y con token válido (617); POST /msg/ con token válido (611)"
+    - "HEAD /msg sin token (93) y con token (615); HEAD /health con token (614): 404 con cuerpo vacío"
+  no_observado:
+    - "'//' (doble barra): NO observado en el log. El reemplazo (proxy.ts) responde 404 E404 sin auth por diseño; es un supuesto."
+    - "'\\' en la ruta y /_next/*: NO observados en el log (proxy.ts los trata como 404 E404; supuesto)."
+    - "HEAD sobre /__reset, sobre rutas inexistentes o con token inválido; OPTIONS/PUT/DELETE sobre /health y /__reset con token."
+  confianza: confirmado (404 E404 y orden ruteo antes que auth); probable (HEAD /health, una muestra)
+
+paths:
+  /health:
+    get:
+      tags: [infra]
+      operationId: getHealth
+      summary: Salud del servicio (exige token)
+      description: |
+        `GET /health` con token válido -> `200` `{"ok":true}`. No lleva header `X-Req` y no cuenta para `X-Req` (ENT-2, MEM-3).
+        Exige token como el resto de las rutas (ENT-4, RIE-8): sin token o con token inválido -> `401` E001.
+        El query string se ignora (`GET /health?x=1` -> 200; probable, una muestra, ENT-19). El límite de 8192 bytes no
+        aplica (ENT-20, probable).
+
+        Otros métodos sobre `/health` (POST, HEAD, ...) son `404` E404 (ver `x-rutas-desconocidas`); `GET /health/` y `GET /HEALTH`
+        también.
+      x-spec-ids: [ENT-1, ENT-2, ENT-4, ENT-7, ENT-8, ENT-9, ENT-19, ENT-20, MEM-3, ERR-1, RIE-8]
+      x-log-ids: [1, 2, 27, 95, 96, 97, 98, 425, 427, 576, 614, 616, 617]
+      responses:
+        "200":
+          description: Servicio listo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkTrue"
+              examples:
+                ok:
+                  summary: Salud con token válido
+                  value:
+                    ok: true
+                  x-log-ids: [2, 27]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /__reset:
+    post:
+      tags: [infra]
+      operationId: postReset
+      summary: Reinicia el estado (cuentas, operaciones, contadores AC/OP)
+      description: |
+        `POST /__reset` con token válido -> `200` `{"ok":true}`, sin header `X-Req` (ENT-3). No necesita cuerpo; con cuerpo de
+        ~8300 bytes o con query `?x=1` responde igual (una muestra cada uno: probable, ENT-3, ENT-19, ENT-20).
+
+        Efecto (MEM-4): borra cuentas y operaciones y reinicia los contadores; tras él `ALTA` vuelve a dar `AC-0001` (saldo 0) y
+        el primer `DEPOSITO`/`TRANSFER` vuelve a dar `OP-0001`. **No reinicia `X-Req`** (MEM-2). No cuenta para `X-Req` (MEM-3).
+
+        Sin token o con token inválido -> `401` E001. `GET /__reset` -> `404` E404 (id 45).
+      x-spec-ids: [ENT-1, ENT-3, ENT-4, ENT-19, ENT-20, MEM-2, MEM-3, MEM-4, ERR-1, RIE-10]
+      x-log-ids: [3, 24, 47, 70, 76, 107, 122, 129, 577, 618]
+      responses:
+        "200":
+          description: Estado reiniciado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkTrue"
+              examples:
+                reset:
+                  summary: Reset con token válido
+                  value:
+                    ok: true
+                  x-log-ids: [3, 24]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /msg:
+    post:
+      tags: [msg]
+      operationId: postMsg
+      summary: Ejecuta un mensaje `CMD;arg;...;control`
+      description: |
+        Único punto de entrada de negocio. Cuerpo JSON `{"m": "CMD;arg1;...;argN;control"}`. Todo `POST /msg` autenticado
+        (incluidos los 400 y el 413) incrementa el contador del header de respuesta `X-Req` (MEM-1); los 401 y 404 de ruta no.
+
+        ## Formato del cuerpo (ENT-10 a ENT-20)
+
+        - Objeto JSON con la clave `m` de tipo string (en minúscula; `M` da E102). Cuerpo no-JSON, vacío, JSON válido + basura
+          final, BOM al inicio o formulario real -> `400` E100. JSON válido que no es un objeto con `m` string (`{}`, `{"m":5}`,
+          `{"m":null}`, `{"m":["PING;64"]}`, `[]`, `null`, `"PING;64"`) -> `400` E102.
+        - **Límite de 8192 bytes** del cuerpo crudo (bytes UTF-8, cuerpo entero, no solo `m`): hasta 8192 inclusive se procesa;
+          8193 o más -> `413` E101 (ENT-14). Se evalúa antes de parsear el JSON.
+        - `Content-Type` se ignora (ENT-18). Claves extra en el objeto se ignoran (ENT-12). Con la clave `m` duplicada gana la
+          última (ENT-16, una muestra). El query string se ignora (ENT-19).
+        - Espacios, saltos de línea y tabuladores alrededor del JSON se admiten (ENT-17).
+
+        ## Integridad y dígito de control (INT-1 a INT-17)
+
+        El mensaje se parte por `;`: el primer segmento es el comando, el **último** es siempre el control.
+        Sin ningún `;` (incluido `m` vacío o solo espacios) -> `400` E103. Cualquier segmento vacío (comando, argumento o
+        control) -> `400` E104.
+
+        Control (INT-2): `payload` = el mensaje sin el último `;` ni lo que sigue. `N` = número decimal que resulta de concatenar,
+        por cada carácter del payload **en mayúsculas**, el propio dígito (`0`-`9`) o la posición de la letra en el alfabeto
+        escrita en decimal (A=1 ... Z=26); el resto de caracteres (espacio, tab, `\n`, `-`, `.`, no ASCII) no aporta nada
+        (INT-15). `control = 98 - ((100 * N) mod 97)` (rango 2..98). Ejemplos: `PING` -> 64; `ALTA;Lucia` -> 82;
+        `CONSULTA;AC-0001` -> 14.
+
+        - Forma (INT-7): 1 o 2 dígitos decimales sin signo, sin espacios ni decimales; si no -> `400` E201.
+        - Valor (INT-3): comparación **exacta y textual** con el control calculado; `02` no equivale a `2` (-> E202).
+        - **PING no valida el control** (INT-10): devuelve pong con cualquier control no vacío.
+        - El nombre del comando es insensible a mayúsculas pero **no se recorta** (INT-11, INT-12). Los ids de cuenta y de
+          operación se comparan exactos (INT-17).
+        - El control se valida también para comandos desconocidos, antes de resolver el comando (INT-13).
+
+        ## Comandos
+
+        Seis comandos: PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA. Detalle completo en `x-commands` y en
+        `docs/api/msg.md`.
+
+        | Comando | Firma | Aridad | Éxito |
+        |---|---|---|---|
+        | PING | `PING;<ctrl>` | 0 | 200 `{"pong":true}` |
+        | ALTA | `ALTA;<nombre>;<ctrl>` | 1 | 201 `{"cuentaId":"AC-0001"}` |
+        | CONSULTA | `CONSULTA;<cuenta>;<ctrl>` | 1 | 200 `{"cuenta_id":"AC-0001","saldo":0}` |
+        | DEPOSITO | `DEPOSITO;<cuenta>;<monto>;<ctrl>` | 2 | 200 `{"status":"recieved","operacionId":"OP-0001"}` |
+        | TRANSFER | `TRANSFER;<origen>;<destino>;<monto>;<ctrl>` | 3 | 200 `{"status":"recieved","operacionId":"OP-0002"}` |
+        | ANULA | `ANULA;<operacion>;<ctrl>` | 1 | 200 `{"ok":true,"anulada":"OP-0003"}` o 200 `{"ok":false,"motivo":"ya anulada"}` |
+
+        Cualquier otro nombre (con control correcto) -> `400` E301 (con espacio final en `mensaje` y, si el nombre está a distancia
+        de edición <= 2 de un comando, el campo `sugerencia`).
+
+        Monto (INT-16): entero decimal canónico de 1 a 10 dígitos ASCII, sin signo ni ceros a la izquierda, mayor que 0;
+        si no -> `400` E303 (monto vacío es E104). TRANSFER: tope de 100000 por operación (E506) y saldo insuficiente (E507).
+
+        ## Orden de evaluación de errores
+
+        Ver `x-error-precedence` (ERR-29) más abajo.
+      x-spec-ids: [ENT-1, ENT-4, ENT-5, ENT-10, ENT-12, ENT-13, ENT-14, ENT-15, ENT-16, ENT-17, ENT-18, ENT-19, INT-1, INT-2, INT-3, INT-7, INT-8, INT-9, INT-10, INT-11, INT-12, INT-13, INT-14, INT-15, INT-16, INT-17, MEM-1, ERR-29]
+      x-log-ids: [4, 6, 8, 9, 10, 16, 17, 33, 40, 41, 42, 64, 111, 143, 146, 503, 511]
+      x-error-precedence:
+        confianza_global: >-
+          confirmado salvo los eslabones marcados 'probable' (una sola muestra o inferidos por transitividad).
+        fuente: ERR-29 (con ERR-15 a ERR-18, ERR-22, ERR-26 a ERR-28 de spec/especificacion.md)
+        orden:
+          - paso: 1
+            codigo: E404
+            status: 404
+            condicion: "ruta o método distintos de GET /health, POST /__reset, POST /msg (se evalúa aun sin token)"
+            confianza: confirmado
+            x-log-ids: [69, 72, 73, 89, 90, 91, 92, 103, 104, 105, 106]
+          - paso: 2
+            codigo: E001
+            status: 401
+            condicion: "falta token, token inválido o esquema distinto de Bearer (exacto)"
+            confianza: confirmado
+            x-log-ids: [71, 94, 99, 100, 101, 102, 426, 428]
+          - paso: 3
+            codigo: E101
+            status: 413
+            condicion: "cuerpo crudo > 8192 bytes (antes de parsear; gana a E100 y E102; 404 y 401 ganan a E101)"
+            confianza: "confirmado (E404>E101: 574, 575, 578; E001>E101: 567-569; E101>E102: 571, 572, 573); probable (E101>E100: una muestra, 570)"
+            x-log-ids: [503, 511, 567, 568, 569, 570, 571, 572, 573, 574, 575, 578]
+          - paso: 4
+            codigo: E100
+            status: 400
+            condicion: "cuerpo no es JSON válido (vacío, 'xx', basura final, BOM)"
+            confianza: confirmado (xx, vacío); probable (basura final, BOM, formulario)
+            x-log-ids: [33, 42, 604, 606, 609]
+          - paso: 5
+            codigo: E102
+            status: 400
+            condicion: "JSON válido que no es objeto con m string"
+            confianza: confirmado
+            x-log-ids: [40, 41, 146, 598, 599, 600, 601, 602]
+          - paso: 6
+            codigo: E103
+            status: 400
+            condicion: "m sin ningún ';' (incluye '' y '   ')"
+            confianza: confirmado
+            x-log-ids: [64, 143, 144]
+          - paso: 7
+            codigo: E104
+            status: 400
+            condicion: "algún segmento vacío (comando, argumento o control); gana a E201/E202"
+            confianza: "confirmado con un segmento vacío por mensaje; E104 frente a E302/E202 con más de un fallo en comandos no-PING: NO probado (desconocido)"
+            x-log-ids: [54, 65, 66, 87, 112, 183, 249, 358]
+          - paso: 8
+            codigo: PING
+            status: 200
+            condicion: "comando PING: sale aquí con {pong:true}, o E302 si tiene argumentos; no pasa por E201/E202"
+            confianza: confirmado
+            x-log-ids: [49, 50, 51, 52, 53, 55, 56, 57, 58, 67, 68]
+          - paso: 9
+            codigo: E201
+            status: 400
+            condicion: "el último segmento no son 1-2 dígitos"
+            confianza: confirmado
+            x-log-ids: [20, 111, 113, 114, 115, 622, 623]
+          - paso: 10
+            codigo: E202
+            status: 400
+            condicion: "control distinto del calculado (también para comandos desconocidos)"
+            confianza: confirmado
+            x-log-ids: [5, 79, 80, 81, 82, 86, 123, 128, 131, 134, 136, 138, 140]
+          - paso: 11
+            codigo: E301
+            status: 400
+            condicion: "comando no es uno de los seis (cualquier nº de argumentos; gana a E302)"
+            confianza: confirmado
+            x-log-ids: [15, 141, 156, 158, 373]
+          - paso: 12
+            codigo: E302
+            status: 400
+            condicion: "nº de argumentos distinto de la aridad del comando; gana a E303, E401, E402, E304, E506, E507"
+            confianza: confirmado
+            x-log-ids: [23, 67, 139, 157, 248, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562]
+          - paso: 13
+            codigo: E303
+            status: 400
+            condicion: "monto de DEPOSITO/TRANSFER inválido (gana a E401 y a E304)"
+            confianza: confirmado (frente a E401/E304); probable (frente a E506/E507); E202>E303 solo inferido por transitividad
+            x-log-ids: [162, 311, 323, 330, 226]
+          - paso: 14
+            codigo: E304
+            status: 400
+            condicion: "TRANSFER con origen == destino (gana a E401, E506, E507)"
+            confianza: confirmado (cuenta existente); probable (cuenta inexistente, una muestra, 473)
+            x-log-ids: [327, 328, 329, 473]
+          - paso: 15
+            codigo: E401
+            status: 404
+            condicion: "cuenta inexistente o id mal formado (CONSULTA, DEPOSITO, TRANSFER origen/destino); gana a E506/E507"
+            confianza: confirmado
+            x-log-ids: [18, 310, 320, 324, 325, 326]
+          - paso: 16
+            codigo: E402
+            status: 404
+            condicion: "ANULA: operación inexistente o id mal formado (después de E302)"
+            confianza: confirmado
+            x-log-ids: [238, 547, 557]
+          - paso: 17
+            codigo: E506
+            status: 422
+            condicion: "TRANSFER con monto > 100000 (gana a E507)"
+            confianza: "confirmado (E506 en sí); probable (E506>E507, una muestra, 227)"
+            x-log-ids: [12, 227, 303]
+          - paso: 18
+            codigo: E507
+            status: 422
+            condicion: "TRANSFER con monto <= 100000 y > saldo del origen (saldo negativo cuenta como insuficiente)"
+            confianza: confirmado
+            x-log-ids: [19, 229, 230, 338, 587, 594]
+        nota: >-
+          Orden de los eslabones DEPOSITO: E302 -> E303 -> E401. TRANSFER: E302 -> E303 -> E304 -> E401 -> E506 -> E507.
+          CONSULTA: E302 -> E401. ANULA: E302 -> E402 -> ejecución. ALTA: E302 -> ejecución.
+      x-commands:
+        PING:
+          firma: "PING;<ctrl>"
+          aridad: 0
+          argumentos: []
+          validacion: "No valida el control (cualquier segmento no vacío). Valida estructura (E103/E104) y aridad (E302)."
+          efecto_estado: ninguno
+          respuesta: "200 {\"pong\":true}"
+          errores: [E103, E104, E302]
+          x-spec-ids: [CMD-1, CMD-2, INT-10, ERR-19]
+          x-log-ids: [4, 25, 49, 50, 51, 52, 53, 54, 55, 64, 65, 66, 67, 68]
+          confianza: confirmado
+        ALTA:
+          firma: "ALTA;<nombre>;<ctrl>"
+          aridad: 1
+          argumentos:
+            - "nombre: texto libre sin validar (mayúsculas, espacios internos o finales, solo espacios, dígitos, acentos, CJK, caracteres de control); vacío -> E104. No se ve ningún efecto del nombre en las respuestas."
+          validacion: "control (E201/E202), aridad (E302)."
+          efecto_estado: "Crea una cuenta con saldo 0 y consume el siguiente número del contador AC (AC-0001, AC-0002, ...). No deduplica nombres. Una ALTA rechazada (E202, E302, E104, 413) no consume número."
+          respuesta: "201 {\"cuentaId\":\"AC-0001\"}"
+          errores: [E104, E201, E202, E302]
+          x-spec-ids: [CMD-3, CMD-4, CMD-5, CMD-6, CMD-7, MEM-5, MEM-6, MEM-12]
+          x-log-ids: [5, 6, 7, 8, 23, 108, 130, 340, 341, 355, 356, 357, 358, 359, 360, 361]
+          confianza: confirmado
+        CONSULTA:
+          firma: "CONSULTA;<cuenta>;<ctrl>"
+          aridad: 1
+          argumentos:
+            - "cuenta: id exacto 'AC-' + 4 dígitos de una cuenta existente (ac-0001, AC-1, AC-00001, 'AC-0001 ' -> E401)."
+          validacion: "control, aridad, existencia de la cuenta."
+          efecto_estado: ninguno (solo lectura)
+          respuesta: "200 {\"cuenta_id\":\"AC-0001\",\"saldo\":0} (saldo entero JSON; puede superar 2^32 y ser negativo)"
+          errores: [E104, E201, E202, E302, E401]
+          x-spec-ids: [CMD-8, CMD-9, CMD-10, INT-17]
+          x-log-ids: [8, 11, 14, 18, 22, 109, 124, 126, 127, 139, 197, 199, 285, 316]
+          confianza: "confirmado; probable solo en aridad 0 (CONSULTA;11, CMD-10)"
+        DEPOSITO:
+          firma: "DEPOSITO;<cuenta>;<monto>;<ctrl>"
+          aridad: 2
+          argumentos:
+            - "cuenta: id de cuenta existente."
+            - "monto: entero decimal canónico de 1 a 10 dígitos ASCII, > 0, sin signo ni ceros a la izquierda (INT-16). Sin tope: 9999999999 pasa."
+          validacion: "control, aridad, monto (E303 antes que E401), existencia de la cuenta."
+          efecto_estado: "Suma el monto al saldo de inmediato y crea una operación con el siguiente número del contador OP (compartido con TRANSFER)."
+          respuesta: "200 {\"status\":\"recieved\",\"operacionId\":\"OP-0001\"} (typo literal 'recieved')"
+          errores: [E104, E201, E202, E302, E303, E401]
+          x-spec-ids: [CMD-11, CMD-12, CMD-13, CMD-14, CMD-15, INT-16, MEM-7, MEM-8]
+          x-log-ids: [9, 21, 157, 162, 183, 186, 188, 204, 310, 311]
+          confianza: confirmado
+        TRANSFER:
+          firma: "TRANSFER;<origen>;<destino>;<monto>;<ctrl>"
+          aridad: 3
+          argumentos:
+            - "origen: id de cuenta existente."
+            - "destino: id de cuenta existente (distinto del origen)."
+            - "monto: igual gramática que DEPOSITO."
+          validacion: "control, aridad, monto (E303), origen == destino (E304), existencia de ambas cuentas (E401), tope por operación 100000 (E506), saldo del origen (E507)."
+          efecto_estado: "Resta el monto al origen, lo suma al destino y consume un número OP. Transferir exactamente el saldo está permitido. Los fallos no consumen número de operación."
+          respuesta: "200 {\"status\":\"recieved\",\"operacionId\":\"OP-0002\"}"
+          errores: [E104, E201, E202, E302, E303, E304, E401, E506, E507]
+          x-spec-ids: [CMD-16, CMD-17, CMD-18, CMD-19, CMD-20, CMD-21, CMD-22, CMD-23, MEM-8, MEM-11]
+          x-log-ids: [10, 12, 13, 19, 227, 229, 300, 301, 302, 303, 320, 327, 330, 335, 338]
+          confianza: "confirmado; probable solo en E506>E507 y en E304>E401 con cuenta inexistente (una muestra cada uno)"
+        ANULA:
+          firma: "ANULA;<operacion>;<ctrl>"
+          aridad: 1
+          argumentos:
+            - "operacion: id exacto 'OP-' + 4 dígitos de una operación existente (DEPOSITO o TRANSFER)."
+          validacion: "control, aridad (E302 antes que E402), existencia de la operación."
+          efecto_estado: >-
+            Primera vez: revierte la operación sin comprobar fondos (el saldo puede quedar negativo). TRANSFER: devuelve el monto al
+            origen y se lo quita al destino. DEPOSITO: resta el monto a la cuenta. Marca la operación como anulada. No consume
+            número de operación y no hay ventana de tiempo observada (5 y 35 min). Repetida: no vuelve a tocar saldos.
+          respuesta: "200 {\"ok\":true,\"anulada\":\"OP-0003\"}; repetida: 200 {\"ok\":false,\"motivo\":\"ya anulada\"} (fallo de negocio con status 200)"
+          errores: [E104, E201, E202, E302, E402]
+          x-spec-ids: [CMD-24, CMD-25, CMD-26, CMD-27, CMD-28, CMD-29, CMD-30, CMD-31, MEM-10, MEM-13, MEM-14]
+          x-log-ids: [16, 17, 238, 248, 249, 258, 260, 263, 265, 283, 584, 647]
+          confianza: "confirmado; probable solo en aridad 0 (ANULA;45) y en E104 por argumento vacío (ANULA;;45)"
+      requestBody:
+        required: true
+        description: >-
+          Objeto JSON con `m` (string). El `Content-Type` se ignora. Cuerpo crudo máximo 8192 bytes (ENT-14). Claves extra ignoradas.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MsgRequest"
+            examples:
+              ping:
+                summary: PING (control 64; no se valida)
+                value:
+                  m: "PING;64"
+                x-log-ids: [4]
+              alta:
+                summary: ALTA (control 82)
+                value:
+                  m: "ALTA;Lucia;82"
+                x-log-ids: [6]
+              consulta:
+                summary: CONSULTA (control 14)
+                value:
+                  m: "CONSULTA;AC-0001;14"
+                x-log-ids: [8]
+              deposito:
+                summary: DEPOSITO de 250000 (control 86)
+                value:
+                  m: "DEPOSITO;AC-0001;250000;86"
+                x-log-ids: [9]
+              transfer:
+                summary: TRANSFER de 40000 (control 86)
+                value:
+                  m: "TRANSFER;AC-0001;AC-0002;40000;86"
+                x-log-ids: [10]
+              anula:
+                summary: ANULA (control 66)
+                value:
+                  m: "ANULA;OP-0003;66"
+                x-log-ids: [16]
+      responses:
+        "200":
+          description: >-
+            Éxito de PING, CONSULTA, DEPOSITO, TRANSFER o ANULA (incluido el fallo de negocio `ya anulada`, que también es 200).
+            Lleva el header `X-Req`.
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Pong"
+                  - $ref: "#/components/schemas/ConsultaOk"
+                  - $ref: "#/components/schemas/OperacionRecibida"
+                  - $ref: "#/components/schemas/AnulaOk"
+                  - $ref: "#/components/schemas/AnulaYaAnulada"
+              examples:
+                ping:
+                  summary: PING
+                  description: "Mensaje: PING;64. También con cualquier control no vacío (PING;XX, PING;00)."
+                  value:
+                    pong: true
+                  x-spec-ids: [CMD-1, INT-10]
+                  x-log-ids: [4, 25, 48, 49, 50, 51, 52, 53]
+                consulta:
+                  summary: CONSULTA de cuenta existente
+                  description: "Mensaje: CONSULTA;AC-0001;14 (cuenta recién creada, saldo 0). Clave `cuenta_id` en snake_case."
+                  value:
+                    cuenta_id: AC-0001
+                    saldo: 0
+                  x-spec-ids: [CMD-8, CMD-4]
+                  x-log-ids: [8, 109]
+                consulta_saldo_con_depositos:
+                  summary: CONSULTA tras depositar y transferir
+                  description: "Mensaje: CONSULTA;AC-0002;11 (canario, tras recibir 40000 + 100000 - 100000 anulado + 700)."
+                  value:
+                    cuenta_id: AC-0002
+                    saldo: 40700
+                  x-spec-ids: [CMD-8, CMD-17]
+                  x-log-ids: [22]
+                deposito:
+                  summary: DEPOSITO
+                  description: "Mensaje: DEPOSITO;AC-0001;250000;86. Typo literal `recieved`; clave `operacionId`."
+                  value:
+                    status: recieved
+                    operacionId: OP-0001
+                  x-spec-ids: [CMD-11, MEM-7]
+                  x-log-ids: [9]
+                transfer:
+                  summary: TRANSFER
+                  description: "Mensaje: TRANSFER;AC-0001;AC-0002;40000;86 (segunda operación tras un DEPOSITO). Mismo formato que DEPOSITO."
+                  value:
+                    status: recieved
+                    operacionId: OP-0002
+                  x-spec-ids: [CMD-16, MEM-7]
+                  x-log-ids: [10, 335]
+                anula_ok:
+                  summary: ANULA exitosa
+                  description: "Mensaje: ANULA;OP-0003;66."
+                  value:
+                    ok: true
+                    anulada: OP-0003
+                  x-spec-ids: [CMD-24]
+                  x-log-ids: [16]
+                anula_ya_anulada:
+                  summary: ANULA repetida (fallo de negocio con status 200)
+                  description: "Mensaje: ANULA;OP-0003;66 por segunda vez. No es un código E-xxx."
+                  value:
+                    ok: false
+                    motivo: ya anulada
+                  x-spec-ids: [CMD-25, ERR-14, MEM-10]
+                  x-log-ids: [17, 263, 268, 295]
+        "201":
+          description: Cuenta creada por ALTA. Lleva el header `X-Req`.
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AltaOk"
+              examples:
+                alta:
+                  summary: ALTA
+                  description: "Mensaje: ALTA;Lucia;82. Clave `cuentaId` en camelCase (distinta de `cuenta_id` de CONSULTA)."
+                  value:
+                    cuentaId: AC-0001
+                  x-spec-ids: [CMD-3, MEM-5]
+                  x-log-ids: [6, 108, 130, 340]
+        "400":
+          description: >-
+            Error de validación. Todos los cuerpos llevan `error` y `mensaje`; E301 puede añadir `sugerencia`. Lleva el header
+            `X-Req` (los 400 cuentan).
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorE100"
+                  - $ref: "#/components/schemas/ErrorE102"
+                  - $ref: "#/components/schemas/ErrorE103"
+                  - $ref: "#/components/schemas/ErrorE104"
+                  - $ref: "#/components/schemas/ErrorE201"
+                  - $ref: "#/components/schemas/ErrorE202"
+                  - $ref: "#/components/schemas/ErrorE301"
+                  - $ref: "#/components/schemas/ErrorE301ConSugerencia"
+                  - $ref: "#/components/schemas/ErrorE302"
+                  - $ref: "#/components/schemas/ErrorE303"
+                  - $ref: "#/components/schemas/ErrorE304"
+              examples:
+                E100_no_json:
+                  summary: E100 cuerpo no JSON
+                  description: "Cuerpo crudo: xx (también cuerpo vacío)."
+                  value:
+                    error: E100
+                    mensaje: json inválido
+                  x-spec-ids: [ERR-3, ENT-10]
+                  x-log-ids: [33, 42]
+                E102_sin_m:
+                  summary: E102 objeto sin m, m no string, array, null o string JSON
+                  description: "Cuerpos: {} , {\"m\":5} , [] , null , \"PING;64\". Mismo mensaje en todos los casos."
+                  value:
+                    error: E102
+                    mensaje: falta m
+                  x-spec-ids: [ERR-4, ENT-15]
+                  x-log-ids: [40, 41, 146, 598, 599, 600, 601, 602]
+                E103_sin_punto_y_coma:
+                  summary: E103 mensaje sin ningún ';'
+                  description: "Mensajes: PING , \"\" (m vacío) , \"   \"."
+                  value:
+                    error: E103
+                    mensaje: falta control
+                  x-spec-ids: [ERR-5, INT-9, ENT-13]
+                  x-log-ids: [64, 143, 144]
+                E104_segmento_vacio:
+                  summary: E104 segmento vacío
+                  description: "Mensajes: PING; , CONSULTA;AC-0001; , DEPOSITO;AC-0001;;4 (monto vacío es E104, no E303)."
+                  value:
+                    error: E104
+                    mensaje: segmento vacío
+                  x-spec-ids: [ERR-6, INT-8]
+                  x-log-ids: [54, 112, 183]
+                E201_control_mal_formado:
+                  summary: E201 control mal formado
+                  description: "Mensajes: CONSULTA;AC-0001;XX , DEPOSITO;AC-0002;700;5X (también 014, +14, 14.0, -83, 111)."
+                  value:
+                    error: E201
+                    mensaje: control mal formado
+                  x-spec-ids: [ERR-7, INT-7]
+                  x-log-ids: [20, 111]
+                E202_control_invalido:
+                  summary: E202 control inválido
+                  description: "Mensajes: ALTA;Lucia;83 (el correcto es 82) , CONSULTA;AC-0038;0 (rango 2..98: 0 se rechaza) , CONSULTA;AC-0005;99."
+                  value:
+                    error: E202
+                    mensaje: control inválido
+                  x-spec-ids: [ERR-8, INT-3, INT-4]
+                  x-log-ids: [5, 123, 128]
+                E301_sin_sugerencia:
+                  summary: E301 comando desconocido (sin sugerencia)
+                  description: "Mensajes (con control correcto): SALDOS;AC-0001;38 , SALDO;AC-0001;64. OJO: `mensaje` termina en un espacio."
+                  value:
+                    error: E301
+                    mensaje: "comando desconocido "
+                  x-spec-ids: [ERR-9, INT-13, RIE-5]
+                  x-log-ids: [15, 377, 378]
+                E301_con_sugerencia:
+                  summary: E301 con campo sugerencia
+                  description: "Mensaje: CONSULT;AC-0001;41 (distancia de edición <= 2 de CONSULTA). Otro: ' PING;64' -> sugerencia PING (63)."
+                  value:
+                    error: E301
+                    mensaje: "comando desconocido "
+                    sugerencia: CONSULTA
+                  x-spec-ids: [ERR-9, ERR-30, RIE-18]
+                  x-log-ids: [365, 63]
+                E301_sugerencia_empate:
+                  summary: E301 sugerencia con empate (gana el primero alfabético)
+                  description: "Mensaje: ANLUA;3 (empate ALTA/ANULA a distancia 2 -> ALTA). Desempate: probable (4 muestras)."
+                  value:
+                    error: E301
+                    mensaje: "comando desconocido "
+                    sugerencia: ALTA
+                  x-spec-ids: [ERR-30]
+                  x-log-ids: [456, 471, 564, 566]
+                E302_aridad:
+                  summary: E302 aridad inválida
+                  description: "Mensajes: ALTA;Lucia;Gomez;11 , PING;64;64 , CONSULTA;11 , DEPOSITO;AC-0001;4 , ANULA;OP-0001;x;45."
+                  value:
+                    error: E302
+                    mensaje: aridad inválida
+                  x-spec-ids: [ERR-10, CMD-33]
+                  x-log-ids: [23, 67, 139, 157, 248]
+                E303_monto:
+                  summary: E303 monto inválido
+                  description: "Mensajes: DEPOSITO;AC-0001;0;31 , TRANSFER;AC-0001;AC-0001;0;74 (E303 gana a E304)."
+                  value:
+                    error: E303
+                    mensaje: monto inválido
+                  x-spec-ids: [ERR-23, INT-16, ERR-26]
+                  x-log-ids: [162, 330]
+                E304_origen_destino_iguales:
+                  summary: E304 origen y destino iguales
+                  description: "Mensaje: TRANSFER;AC-0001;AC-0001;10;22."
+                  value:
+                    error: E304
+                    mensaje: origen y destino iguales
+                  x-spec-ids: [ERR-24, CMD-21]
+                  x-log-ids: [327, 328, 329]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: >-
+            Dos errores de negocio con status 404 (cuenta u operación inexistente). Llevan `X-Req`. (El 404 E404 de ruta
+            desconocida NO se produce en `POST /msg`; ver `x-rutas-desconocidas`.)
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorE401"
+                  - $ref: "#/components/schemas/ErrorE402"
+              examples:
+                E401_cuenta:
+                  summary: E401 cuenta inexistente
+                  description: "Mensajes: CONSULTA;AC-0009;87 , DEPOSITO;AC-0009;100;41 , TRANSFER;AC-0009;AC-0002;10;9. También ids mal formados (ac-0001, AC-1)."
+                  value:
+                    error: E401
+                    mensaje: cuenta inexistente
+                  x-spec-ids: [ERR-11, CMD-9, CMD-20, INT-17]
+                  x-log-ids: [18, 310, 320]
+                E402_operacion:
+                  summary: E402 operación inexistente (con acento)
+                  description: "Mensaje: ANULA;OP-9999;51 (también OP-0000, op-0001, OP-1, AC-0001)."
+                  value:
+                    error: E402
+                    mensaje: operación inexistente
+                  x-spec-ids: [ERR-25, CMD-30]
+                  x-log-ids: [238]
+        "413":
+          description: >-
+            Cuerpo crudo de más de 8192 bytes (bytes UTF-8, cuerpo entero). Gana a E100/E102 y pierde contra E404 y E001.
+            Cuenta para `X-Req`.
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorE101"
+              examples:
+                E101_cuerpo_grande:
+                  summary: E101 cuerpo demasiado grande
+                  description: "Cuerpo de 8193 bytes -> 413 (8192 bytes -> 201). 60 `ñ` (8252 bytes) también."
+                  value:
+                    error: E101
+                    mensaje: cuerpo demasiado grande
+                  x-spec-ids: [ERR-21, ENT-14]
+                  x-log-ids: [503, 513, 486, 487]
+        "422":
+          description: Regla de negocio de TRANSFER (tope por operación o saldo insuficiente). Lleva `X-Req`.
+          headers:
+            X-Req:
+              $ref: "#/components/headers/X-Req"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorE506"
+                  - $ref: "#/components/schemas/ErrorE507"
+              examples:
+                E506_limite:
+                  summary: E506 límite excedido (monto > 100000)
+                  description: "Mensaje: TRANSFER;AC-0001;AC-0002;120000;55 (100000 pasa; 100001 falla). Con 9999999999 y saldo 5000 también E506 (no E507)."
+                  value:
+                    error: E506
+                    mensaje: límite excedido
+                  x-spec-ids: [ERR-12, CMD-18, ERR-28]
+                  x-log-ids: [12, 227, 303]
+                E507_saldo:
+                  summary: E507 saldo insuficiente
+                  description: "Mensaje: TRANSFER;AC-0001;AC-0002;5000;65 con saldo 4999 (monto <= 100000 y > saldo). Un saldo negativo cuenta como insuficiente."
+                  value:
+                    error: E507
+                    mensaje: saldo insuficiente
+                  x-spec-ids: [ERR-13, CMD-19]
+                  x-log-ids: [19, 229, 230, 338, 587, 594]
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        `Authorization: Bearer <token>`. El esquema se compara exacto: `bearer` en minúscula y `Basic` (incluso con un token
+        válido) dan 401 E001 (ENT-4). El reemplazo acepta un único token, el de la variable de entorno `TEAM_TOKEN`.
+
+  headers:
+    X-Req:
+      description: >-
+        Contador por token de `POST /msg` autenticados recibidos (acumulado), como string numérico (`"21"`). Cuenta los 400 y el 413;
+        no lo llevan `GET /health`, `POST /__reset`, los 401 ni los 404 de ruta. `/__reset` no lo reinicia (MEM-1 a MEM-3).
+        Los headers no se comparan en la evaluación; el reemplazo lo replica por fidelidad.
+      schema:
+        type: string
+        pattern: "^[0-9]+$"
+      x-spec-ids: [MEM-1, MEM-2, MEM-3]
+      x-log-ids: [24, 25, 31, 33, 40, 48, 148, 612]
+
+  responses:
+    Unauthorized:
+      description: >-
+        Token ausente, vacío, inválido o con esquema distinto de `Bearer` exacto. Mismo cuerpo siempre; sin `X-Req`. En
+        `/msg`, la auth se evalúa antes de leer el cuerpo (cuerpo válido o no-JSON sin token -> 401) y antes del límite de tamaño.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorE001"
+          examples:
+            E001_sin_token:
+              summary: E001 no autorizado
+              description: "Sin header Authorization, Bearer vacío, token inventado, Basic, bearer minúscula."
+              value:
+                error: E001
+                mensaje: no autorizado
+              x-spec-ids: [ENT-4, ERR-1]
+              x-log-ids: [1, 37, 38, 70, 71, 94, 95, 96, 97, 98, 99, 100, 101, 102, 425, 426, 427, 428]
+
+  schemas:
+    MsgRequest:
+      type: object
+      description: >-
+        Cuerpo de `POST /msg`. `m` = `CMD;arg1;...;argN;control`. Claves extra se ignoran (ENT-12). Cuerpo crudo <= 8192 bytes.
+      required: [m]
+      additionalProperties: true
+      properties:
+        m:
+          type: string
+          description: >-
+            Mensaje `CMD;arg;...;control`. Control = `98 - ((100 * N) mod 97)` sobre el payload (mensaje sin el último `;control`),
+            con N = concatenación decimal de dígitos y posiciones alfabéticas (A=1..Z=26) en mayúsculas; PING no lo valida.
+          examples: ["PING;64", "ALTA;Lucia;82", "CONSULTA;AC-0001;14"]
+      x-spec-ids: [ENT-10, ENT-12, ENT-14, INT-2]
+      x-log-ids: [4, 40, 41, 145, 146]
+
+    OkTrue:
+      type: object
+      description: Cuerpo de `GET /health` y `POST /__reset`.
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok:
+          const: true
+      x-spec-ids: [ENT-2, ENT-3]
+      x-log-ids: [2, 3]
+
+    Pong:
+      type: object
+      description: Respuesta de PING.
+      required: [pong]
+      additionalProperties: false
+      properties:
+        pong:
+          const: true
+      x-spec-ids: [CMD-1]
+      x-log-ids: [4]
+
+    AltaOk:
+      type: object
+      description: Respuesta de ALTA (201). Clave `cuentaId` (camelCase).
+      required: [cuentaId]
+      additionalProperties: false
+      properties:
+        cuentaId:
+          type: string
+          pattern: "^AC-[0-9]{4}$"
+          description: "AC- + 4 dígitos con ceros, secuencial desde AC-0001 (visto hasta AC-0017; qué pasa en AC-9999 se desconoce)."
+      x-spec-ids: [CMD-3, MEM-5]
+      x-log-ids: [6, 108, 340, 361]
+
+    ConsultaOk:
+      type: object
+      description: Respuesta de CONSULTA (200). Clave `cuenta_id` (snake_case).
+      required: [cuenta_id, saldo]
+      additionalProperties: false
+      properties:
+        cuenta_id:
+          type: string
+          pattern: "^AC-[0-9]{4}$"
+        saldo:
+          type: integer
+          description: "Entero JSON; puede superar 2^32 (7553450945 visto) y ser negativo (tras ANULA sin fondos: -500, -900, -300)."
+      x-spec-ids: [CMD-8, CMD-28]
+      x-log-ids: [8, 197, 199, 285, 585, 648]
+
+    OperacionRecibida:
+      type: object
+      description: Respuesta de DEPOSITO y TRANSFER (200). Typo literal `recieved`; clave `operacionId`.
+      required: [status, operacionId]
+      additionalProperties: false
+      properties:
+        status:
+          const: recieved
+          description: "Typo literal del original; el efecto es inmediato y síncrono."
+        operacionId:
+          type: string
+          pattern: "^OP-[0-9]{4}$"
+          description: "Un único contador compartido por DEPOSITO y TRANSFER, desde OP-0001; los fallos y ANULA no lo consumen."
+      x-spec-ids: [CMD-11, CMD-16, MEM-7, RIE-3, RIE-7]
+      x-log-ids: [9, 10, 204]
+
+    AnulaOk:
+      type: object
+      description: Respuesta de ANULA la primera vez (200).
+      required: [ok, anulada]
+      additionalProperties: false
+      properties:
+        ok:
+          const: true
+        anulada:
+          type: string
+          pattern: "^OP-[0-9]{4}$"
+      x-spec-ids: [CMD-24]
+      x-log-ids: [16, 265]
+
+    AnulaYaAnulada:
+      type: object
+      description: Respuesta de ANULA repetida (200). Fallo de negocio con status 200, no un código E-xxx (RIE-6).
+      required: [ok, motivo]
+      additionalProperties: false
+      properties:
+        ok:
+          const: false
+        motivo:
+          const: ya anulada
+      x-spec-ids: [CMD-25, ERR-14, MEM-10]
+      x-log-ids: [17, 263, 268, 295]
+
+    Error:
+      type: object
+      description: >-
+        Forma genérica de todo error con código. Catálogo completo (status, mensaje exacto) en `x-error-catalog`. Las respuestas
+        usan los esquemas específicos `ErrorE001`...`ErrorE507`.
+      required: [error, mensaje]
+      properties:
+        error:
+          type: string
+          enum: [E001, E100, E101, E102, E103, E104, E201, E202, E301, E302, E303, E304, E401, E402, E404, E506, E507]
+        mensaje:
+          type: string
+        sugerencia:
+          type: string
+          enum: [PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA]
+          description: "Solo en E301, cuando el nombre está a distancia de edición <= 2 de un comando."
+      x-error-catalog:
+        - {codigo: E001, status: 401, mensaje: "no autorizado", spec: ERR-1}
+        - {codigo: E100, status: 400, mensaje: "json inválido", spec: ERR-3}
+        - {codigo: E101, status: 413, mensaje: "cuerpo demasiado grande", spec: ERR-21}
+        - {codigo: E102, status: 400, mensaje: "falta m", spec: ERR-4}
+        - {codigo: E103, status: 400, mensaje: "falta control", spec: ERR-5}
+        - {codigo: E104, status: 400, mensaje: "segmento vacío", spec: ERR-6}
+        - {codigo: E201, status: 400, mensaje: "control mal formado", spec: ERR-7}
+        - {codigo: E202, status: 400, mensaje: "control inválido", spec: ERR-8}
+        - {codigo: E301, status: 400, mensaje: "comando desconocido ", nota: "espacio final; sugerencia opcional", spec: ERR-9}
+        - {codigo: E302, status: 400, mensaje: "aridad inválida", spec: ERR-10}
+        - {codigo: E303, status: 400, mensaje: "monto inválido", spec: ERR-23}
+        - {codigo: E304, status: 400, mensaje: "origen y destino iguales", spec: ERR-24}
+        - {codigo: E401, status: 404, mensaje: "cuenta inexistente", spec: ERR-11}
+        - {codigo: E402, status: 404, mensaje: "operación inexistente", spec: ERR-25}
+        - {codigo: E404, status: 404, mensaje: "ruta desconocida", nota: "ruta o método no soportados; con HEAD el cuerpo es vacío", spec: ERR-2}
+        - {codigo: E506, status: 422, mensaje: "límite excedido", spec: ERR-12}
+        - {codigo: E507, status: 422, mensaje: "saldo insuficiente", spec: ERR-13}
+      x-spec-ids: [ERR-1, ERR-2, ERR-3, ERR-4, ERR-5, ERR-6, ERR-7, ERR-8, ERR-9, ERR-10, ERR-11, ERR-12, ERR-13, ERR-21, ERR-23, ERR-24, ERR-25]
+
+    ErrorE001:
+      type: object
+      description: "401. Cuerpo siempre igual."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E001}
+        mensaje: {const: "no autorizado"}
+      x-spec-ids: [ERR-1]
+      x-log-ids: [1, 37, 70, 95]
+
+    ErrorE100:
+      type: object
+      description: "400. Cuerpo no parseable como JSON."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E100}
+        mensaje: {const: "json inválido"}
+      x-spec-ids: [ERR-3]
+      x-log-ids: [33, 42]
+
+    ErrorE101:
+      type: object
+      description: "413. Cuerpo crudo > 8192 bytes."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E101}
+        mensaje: {const: "cuerpo demasiado grande"}
+      x-spec-ids: [ERR-21]
+      x-log-ids: [503, 148, 149]
+
+    ErrorE102:
+      type: object
+      description: "400. JSON válido que no es un objeto con `m` string."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E102}
+        mensaje: {const: "falta m"}
+      x-spec-ids: [ERR-4]
+      x-log-ids: [40, 41, 146]
+
+    ErrorE103:
+      type: object
+      description: "400. `m` sin ningún ';'."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E103}
+        mensaje: {const: "falta control"}
+      x-spec-ids: [ERR-5]
+      x-log-ids: [64, 143, 144]
+
+    ErrorE104:
+      type: object
+      description: "400. Algún segmento vacío."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E104}
+        mensaje: {const: "segmento vacío"}
+      x-spec-ids: [ERR-6]
+      x-log-ids: [54, 112, 183]
+
+    ErrorE201:
+      type: object
+      description: "400. Último segmento no son 1-2 dígitos."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E201}
+        mensaje: {const: "control mal formado"}
+      x-spec-ids: [ERR-7]
+      x-log-ids: [20, 111]
+
+    ErrorE202:
+      type: object
+      description: "400. Control bien formado pero distinto del calculado."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E202}
+        mensaje: {const: "control inválido"}
+      x-spec-ids: [ERR-8]
+      x-log-ids: [5, 123, 128]
+
+    ErrorE301:
+      type: object
+      description: "400. Comando desconocido, sin `sugerencia`. `mensaje` lleva un espacio final."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E301}
+        mensaje: {const: "comando desconocido "}
+      x-spec-ids: [ERR-9, RIE-5]
+      x-log-ids: [15, 377, 378]
+
+    ErrorE301ConSugerencia:
+      type: object
+      description: >-
+        400. Comando desconocido a distancia de edición <= 2 de un comando conocido (nombre comparado en mayúsculas, sin recortar).
+        `sugerencia` = comando canónico en mayúsculas; desempate alfabético (probable).
+      required: [error, mensaje, sugerencia]
+      additionalProperties: false
+      properties:
+        error: {const: E301}
+        mensaje: {const: "comando desconocido "}
+        sugerencia:
+          type: string
+          enum: [PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA]
+      x-spec-ids: [ERR-9, ERR-30, RIE-18]
+      x-log-ids: [63, 365, 452, 456]
+
+    ErrorE302:
+      type: object
+      description: "400. Nº de argumentos distinto de la aridad (PING 0, ALTA 1, CONSULTA 1, DEPOSITO 2, TRANSFER 3, ANULA 1)."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E302}
+        mensaje: {const: "aridad inválida"}
+      x-spec-ids: [ERR-10, CMD-33]
+      x-log-ids: [23, 67, 139, 157, 248]
+
+    ErrorE303:
+      type: object
+      description: "400. Monto de DEPOSITO/TRANSFER que no es un entero canónico de 1-10 dígitos > 0."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E303}
+        mensaje: {const: "monto inválido"}
+      x-spec-ids: [ERR-23, INT-16]
+      x-log-ids: [162, 330]
+
+    ErrorE304:
+      type: object
+      description: "400. TRANSFER con origen == destino."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E304}
+        mensaje: {const: "origen y destino iguales"}
+      x-spec-ids: [ERR-24]
+      x-log-ids: [327, 328, 329]
+
+    ErrorE401:
+      type: object
+      description: "404. Cuenta inexistente o id mal formado."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E401}
+        mensaje: {const: "cuenta inexistente"}
+      x-spec-ids: [ERR-11]
+      x-log-ids: [18, 310, 320]
+
+    ErrorE402:
+      type: object
+      description: "404. Operación inexistente o id mal formado (con acento)."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E402}
+        mensaje: {const: "operación inexistente"}
+      x-spec-ids: [ERR-25]
+      x-log-ids: [238]
+
+    ErrorE404:
+      type: object
+      description: >-
+        404. Ruta o método no soportados (no se produce en las tres operaciones documentadas; ver `x-rutas-desconocidas`).
+        Con HEAD el cuerpo es vacío.
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E404}
+        mensaje: {const: "ruta desconocida"}
+      x-spec-ids: [ERR-2, ENT-6]
+      x-log-ids: [29, 35, 44, 45]
+
+    ErrorE506:
+      type: object
+      description: "422. TRANSFER con monto > 100000."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E506}
+        mensaje: {const: "límite excedido"}
+      x-spec-ids: [ERR-12]
+      x-log-ids: [12, 227, 303]
+
+    ErrorE507:
+      type: object
+      description: "422. TRANSFER con monto <= 100000 y > saldo del origen."
+      required: [error, mensaje]
+      additionalProperties: false
+      properties:
+        error: {const: E507}
+        mensaje: {const: "saldo insuficiente"}
+      x-spec-ids: [ERR-13]
+      x-log-ids: [19, 229, 230, 338]
