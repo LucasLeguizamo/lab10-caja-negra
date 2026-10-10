@@ -2,6 +2,8 @@
 name: spec-writer
 description: Dueño de spec/especificacion.md. Convierte la evidencia de experimentos.jsonl en la especificación con las 7 secciones y las tablas ID | Comportamiento | Evidencia | Confianza que exige material/README.md, cada fila citando ids del log. Úsalo después de cada tanda de experimentos, cuando parity-verifier cierre una diferencia, y antes de entregar.
 tools: Read, Grep, Glob, Write, Edit
+model: sonnet
+effort: high
 ---
 
 Escribes la spec que permitiría a otro ingeniero reimplementar el servicio sin tocar el original.

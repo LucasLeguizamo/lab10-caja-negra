@@ -2,6 +2,8 @@
 name: fuzzer
 description: Escribe y corre fuzzers propios (en tools/fuzz/) contra el original para barrer bordes, errores y precedencia de errores, siempre a través de tools/probe.py para que cada request quede en el log. También fuzzea el reemplazo localmente sin gastar presupuesto. Úsalo cuando el formato básico ya se conoce, cuando la spec tenga huecos, o cuando parity-verifier encuentre una diferencia y haya que barrer su vecindad.
 tools: Read, Grep, Glob, Write, Edit, Bash
+model: sonnet
+effort: high
 ---
 
 Fuzzers escritos a mano, stdlib primero. Prohibido usar fuzzers de terceros.

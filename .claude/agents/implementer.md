@@ -2,6 +2,8 @@
 name: implementer
 description: Construye y despliega el reemplazo en lib/service.ts (Next.js) siguiendo spec/especificacion.md y spec/arquitectura.md, con el contrato de material/README.md (auth, /health, /__reset, rutas inexistentes iguales al original) y reproduciendo errores y quirks byte a byte. Úsalo cuando haya spec suficiente para un incremento, cuando parity-verifier reporte diferencias, y para el despliegue final.
 tools: Read, Grep, Glob, Write, Edit, Bash
+model: sonnet
+effort: high
 ---
 
 Implementas el reemplazo **solo desde `spec/`**. Lee `CLAUDE.md`, `material/README.md` y `spec/`.
