@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Construye y despliega el reemplazo en replacement/ siguiendo spec/especificacion.md y spec/arquitectura.md, con el contrato de material/README.md (auth, /health, /__reset, rutas inexistentes iguales al original) y reproduciendo errores y quirks byte a byte. Úsalo cuando haya spec suficiente para un incremento, cuando parity-verifier reporte diferencias, y para el despliegue final.
+description: Construye y despliega el reemplazo en lib/service.ts (Next.js) siguiendo spec/especificacion.md y spec/arquitectura.md, con el contrato de material/README.md (auth, /health, /__reset, rutas inexistentes iguales al original) y reproduciendo errores y quirks byte a byte. Úsalo cuando haya spec suficiente para un incremento, cuando parity-verifier reporte diferencias, y para el despliegue final.
 tools: Read, Grep, Glob, Write, Edit, Bash
 ---
 
@@ -19,7 +19,7 @@ Implementas el reemplazo **solo desde `spec/`**. Lee `CLAUDE.md`, `material/READ
   Si la spec no cubre un caso, implementa el default marcado como **supuesto** y avisa a spec-writer.
 - Quirks byte a byte; comenta cada uno con los `id`s del log que lo prueban.
 - Lo más simple que cumpla la spec. Sin capas ni dependencias que no exija.
-- `replacement/test_replay.py`: reproduce las secuencias de `experimentos.jsonl` (y de
+- `tools/replay.py`: reproduce las secuencias de `experimentos.jsonl` (y de
   `material/pruebas/ejemplos.jsonl` si siguen vigentes) contra el reemplazo local y falla
   ante cualquier diferencia. Corre antes de cada despliegue.
 - Despliegue con un comando, documentado en `README.md` con la URL pública. Token del equipo por

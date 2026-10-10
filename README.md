@@ -5,7 +5,7 @@ errores incluidos. Enunciado completo: [`material/README.md`](material/README.md
 
 | Entregable | Dónde |
 |---|---|
-| Reemplazo desplegado | _pendiente_ — código en [`replacement/`](replacement/) |
+| Reemplazo desplegado | _pendiente_ — código en [`lib/service.ts`](lib/service.ts) |
 | Especificación | [`spec/especificacion.md`](spec/) |
 | Log de experimentos | [`experimentos.jsonl`](experimentos.jsonl) |
 

@@ -30,14 +30,14 @@ responda **exactamente igual, errores incluidos**. Fuente de verdad del reto:
 
 | Entregable | Dónde | Dueño |
 |---|---|---|
-| Reemplazo desplegado (contrato en material/README) | `replacement/` + URL en `README.md` | implementer |
+| Reemplazo desplegado (contrato en material/README) | `lib/service.ts` (Next.js, ruta única `app/[[...path]]/route.ts`) + URL en `README.md` | implementer |
 | Especificación (7 secciones, tablas `ID \| Comportamiento \| Evidencia \| Confianza`) | `spec/especificacion.md` | spec-writer |
 | Log de experimentos | `experimentos.jsonl` (lo escribe `tools/probe.py`) | todos vía probe |
 
 ## Flujo
 
 ```
-recon-prober ─┐                                   ┌─► implementer ─► replacement/
+recon-prober ─┐                                   ┌─► implementer ─► lib/service.ts
 fuzzer ───────┼─► experimentos.jsonl ─► spec-writer ─► spec/          │
               │          ▲            system-designer (modelo + diseño)│
               └──────────┴──── huecos ◄── parity-verifier ◄───────────┘
@@ -51,3 +51,12 @@ python3 tools/probe.py raw s2 "ruta inexistente sin token" GET /nada --no-auth
 ```
 
 `seq` hace `/__reset` primero (también queda registrado). Usa nombres de `seq` únicos y descriptivos.
+
+## Stack del reemplazo
+
+- Next.js 16 con **pnpm** (nunca npm/yarn). Docs de esta versión: `node_modules/next/dist/docs/`.
+- Una sola ruta `app/[[...path]]/route.ts` (todos los métodos) → `handle()` en `lib/service.ts`.
+  Así Next no decide nada por su cuenta (`skipTrailingSlashRedirect`, sin 404 propio).
+- Estado en memoria ⇒ **un solo proceso de larga vida**: `pnpm build && pnpm start` en Railway/Render
+  con 1 réplica. Vercel serverless puede repartir en varias instancias con estado distinto: evitar.
+- Token del equipo en `TEAM_TOKEN` (env), nunca en código.
