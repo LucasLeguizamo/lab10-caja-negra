@@ -101,7 +101,11 @@ def send(base, method, path, body, auth):
     if auth is not None:
         h["Authorization"] = auth
     t0 = time.monotonic()
-    c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=TIMEOUT)  # http.client no sigue redirecciones
+    # http.client no sigue redirecciones; el esquema se respeta (un despliegue https por http daría 308 en todo)
+    if u.scheme == "https":
+        c = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=TIMEOUT)
+    else:
+        c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=TIMEOUT)
     try:
         c.request(method, path, body=body.encode("utf-8") if body is not None else None, headers=h)
         r = c.getresponse()
