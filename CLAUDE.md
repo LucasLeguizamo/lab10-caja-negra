@@ -1,52 +1,53 @@
-# Lab 10 — La caja negra
+# Lab 10 — La caja negra (Frontier, reto 2)
 
-Heredamos un servicio de 10 años en producción. Sin código, sin docs, sin autores.
-Recibe mensajes y responde. Hay que entenderlo por completo y construir un
-reemplazo que se comporte **exactamente igual, incluidos sus errores**.
+Servicio HTTP de 10 años sin docs. Hay que entenderlo y construir un reemplazo que
+responda **exactamente igual, errores incluidos**. Fuente de verdad del reto:
+`material/README.md` — léelo completo antes de cualquier trabajo.
 
-## Reglas duras (romperlas = descalificación)
+## Lo esencial del material
 
-1. **Nada de herramientas que hagan el trabajo por nosotros.** Prohibido: inferidores
-   automáticos de protocolo, fuzzers de terceros (AFL, boofuzz, Burp scanner, etc.),
-   servicios que "aprenden" APIs. Permitido: primitivas (`nc`, `curl`, `tcpdump`,
-   `openssl s_client`, `xxd`) y **scripts y fuzzers escritos por nosotros** en `tools/`.
-2. **El reemplazo nunca llama al original ni a otro reemplazo.** Ni proxy, ni caché
-   de respuestas grabadas, ni fallback. Todo el comportamiento sale de nuestra lógica.
-   El verificador de paridad sí habla con ambos; el reemplazo no.
-3. **Toda afirmación de la spec cita un experimento** (`EXP-NNN`). Sin evidencia, no entra.
+- Original: `https://caja-negra-production-c64f.up.railway.app`
+- `POST /msg` con `{"m": "CMD;arg;...;control"}`, `POST /__reset`, `GET /health`.
+- `Authorization: Bearer <token>`; **cada token tiene su propio estado**.
+- Límite por token: 10 req/s y **8.000 req/día**. Header `X-Frontier-Infra: rate-limit` = infra, no servicio.
+- **El servicio cambia durante el día.** Cuenta la versión vigente a las 20:00.
+  `material/pruebas/ejemplos.jsonl` es de la versión de la mañana.
+- Evaluación: 100 tests (status + cuerpo; JSON sin orden de claves; texto exacto si no es JSON),
+  cada uno tras `/__reset`, 5 s por paso, contra **un solo proceso**.
 
-## Entregables (formato exacto: `material/README.md` — leerlo antes de escribir cualquiera)
+## Reglas duras
 
-| Entregable | Dónde vive | Dueño |
+1. **Nada de herramientas que hagan el trabajo por nosotros.** Solo scripts y fuzzers propios.
+2. **El reemplazo nunca llama al original ni a otro reemplazo.** Si lo hace, el set vale 0.
+3. **Todo request al original pasa por `tools/probe.py`**, que lo escribe en `experimentos.jsonl`.
+   Nada de `curl` suelto: un request sin registrar es evidencia perdida.
+4. **Un token = un explorador a la vez.** Dos agentes con el mismo token se pisan el estado.
+   Para explorar en paralelo, cada agente recibe un token distinto (`CAJA_TOKEN` por agente).
+5. **Toda afirmación de la spec cita `id`s del log.** Una afirmación falsa resta puntos.
+6. Los tokens van en `.env` (ignorado por git). **El repo es público: nunca commitear un token.**
+
+## Entregables
+
+| Entregable | Dónde | Dueño |
 |---|---|---|
-| Reemplazo desplegado | `replacement/` + URL en `README.md` | implementer |
-| Especificación | `spec/` | spec-writer |
-| Log de experimentos | `experiments/` | recon-prober, fuzzer |
-
-Si `material/README.md` no existe todavía: pedirlo al usuario, no inventar el formato.
+| Reemplazo desplegado (contrato en material/README) | `replacement/` + URL en `README.md` | implementer |
+| Especificación (7 secciones, tablas `ID \| Comportamiento \| Evidencia \| Confianza`) | `spec/especificacion.md` | spec-writer |
+| Log de experimentos | `experimentos.jsonl` (lo escribe `tools/probe.py`) | todos vía probe |
 
 ## Flujo
 
 ```
-recon-prober ──► experiments/ ──► spec-writer ──► spec/
-      ▲                                              │
-      │                                    system-designer ──► diseño del reemplazo
-   fuzzer ◄── huecos ── parity-verifier ◄── implementer ◄──┘
+recon-prober ─┐                                   ┌─► implementer ─► replacement/
+fuzzer ───────┼─► experimentos.jsonl ─► spec-writer ─► spec/          │
+              │          ▲            system-designer (modelo + diseño)│
+              └──────────┴──── huecos ◄── parity-verifier ◄───────────┘
 ```
 
-1. **recon-prober**: superficie (transporte, framing, handshake, primeros mensajes).
-2. **system-designer**: modelo del sistema (estado, máquina de estados, concurrencia,
-   tiempos) y arquitectura del reemplazo. Decide stack y despliegue.
-3. **fuzzer**: barre el espacio de entradas, sobre todo bordes y errores.
-4. **spec-writer**: convierte evidencia en spec.
-5. **implementer**: construye el reemplazo solo desde la spec.
-6. **parity-verifier**: diferencial original vs reemplazo; cada diferencia es un bug
-   o un hueco de la spec → vuelve al paso 3.
+## Uso de probe
 
-## Convenciones
+```bash
+python3 tools/probe.py seq s1 "PING ignora el control" "PING;00" "PING;XX"
+python3 tools/probe.py raw s2 "ruta inexistente sin token" GET /nada --no-auth
+```
 
-- Experimentos: un archivo por experimento `experiments/EXP-NNN-slug.md`, append-only.
-  Nunca se edita un experimento viejo: si estaba mal, uno nuevo lo refuta y lo cita.
-- Capturas crudas en `experiments/raw/` (bytes exactos, nunca "limpiados").
-- Scripts de sondeo y fuzzers en `tools/`, stdlib primero, sin dependencias salvo necesidad.
-- Endpoint del original: variable `ORIGINAL_URL` (o host:puerto) en `.env`, nunca en código del reemplazo.
+`seq` hace `/__reset` primero (también queda registrado). Usa nombres de `seq` únicos y descriptivos.

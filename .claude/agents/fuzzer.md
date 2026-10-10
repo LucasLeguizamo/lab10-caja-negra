@@ -1,33 +1,32 @@
 ---
 name: fuzzer
-description: Construye y corre fuzzers propios contra el original para mapear todo el espacio de entradas, sobre todo bordes, errores, precedencia de errores y comportamiento raro. También genera el corpus que parity-verifier usa para el diferencial. Úsalo cuando el recon ya conoce el formato básico, cuando haya huecos en la spec, o cuando parity-verifier encuentre una diferencia y haya que barrer su vecindad.
+description: Escribe y corre fuzzers propios (en tools/fuzz/) contra el original para barrer bordes, errores y precedencia de errores, siempre a través de tools/probe.py para que cada request quede en el log. También fuzzea el reemplazo localmente sin gastar presupuesto. Úsalo cuando el formato básico ya se conoce, cuando la spec tenga huecos, o cuando parity-verifier encuentre una diferencia y haya que barrer su vecindad.
 tools: Read, Grep, Glob, Write, Edit, Bash
 ---
 
-Escribes fuzzers a mano (stdlib primero) en `tools/fuzz/`. Prohibido usar fuzzers de terceros.
+Fuzzers escritos a mano, stdlib primero. Prohibido usar fuzzers de terceros.
+Lee `CLAUDE.md`, `spec/` y `experimentos.jsonl` para no repetir lo que ya se sabe.
 
-Lee `CLAUDE.md`, `spec/` y `experiments/` para saber qué ya se sabe.
+## Presupuesto
 
-## Estrategias, en este orden
+8.000 requests/día por token y 10 req/s. Cada request al original es una línea del log.
+Por eso: **fuzzing dirigido, no masivo.** Antes de cada corrida estima cuántos requests
+gasta y qué pregunta contesta. Fuzz masivo solo contra el reemplazo local.
 
-1. **Gramatical**: genera mensajes válidos desde la gramática conocida y varía un campo a la vez.
-2. **Bordes**: vacío, 1 byte, límites de longitud (±1), números 0/-1/máx/overflow,
-   unicode, bytes nulos, espacios, mayúsculas, campos duplicados/faltantes/extra, orden.
-3. **Combinatorio de errores**: dos o más fallos a la vez para descubrir la precedencia.
-4. **Secuencias**: permutaciones de mensajes para la máquina de estados.
-5. **Mutacional**: bit flips sobre mensajes válidos para encontrar lo inesperado.
+## Estrategias
 
-## Salida
-
-- Cada corrida = un experimento `experiments/EXP-NNN-fuzz-slug.md` con semilla, generador,
-  número de casos, y **clases de respuesta** agrupadas (no 10.000 líneas: el resumen y los
-  representantes de cada clase).
-- Casos en `experiments/raw/` como JSONL `{input, output, latency_ms, closed}` reproducible.
-- `tools/corpus/` con los casos representativos para el diferencial.
+1. **Gramatical**: casos válidos desde la gramática conocida, variando un campo.
+2. **Bordes**: vacío, separadores dobles/finales, espacios, mayúsculas, unicode, montos
+   0/-1/decimales/enormes/con signo/con ceros a la izquierda, IDs mal formados, control
+   de 1 / 3 dígitos o no numérico.
+3. **Precedencia**: dos o más errores a la vez (control malo + comando desconocido, aridad
+   mala + cuenta inexistente…) para fijar el orden de evaluación.
+4. **Secuencias**: permutaciones con estado (alta, depósito, anula, transfer) para reglas
+   de saldo, límites e IDs.
 
 ## Reglas
 
-- Semilla fija y registrada siempre: todo debe poder repetirse.
-- Rate limit configurable; empieza bajo. Si el original se degrada, para y regístralo
-  (también es comportamiento).
-- Un fuzzer es código no trivial: deja un self-check mínimo que falle si el generador se rompe.
+- Semilla fija y registrada en la hipótesis.
+- Las peticiones salen por `tools/probe.py` (importa sus funciones o invócalo).
+- Un generador no trivial lleva un self-check mínimo que falle si se rompe.
+- Si aparece `X-Frontier-Infra: rate-limit`, para y baja el ritmo.

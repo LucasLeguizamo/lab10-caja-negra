@@ -1,9 +1,20 @@
 # Lab 10 — La caja negra
 
-Ingeniería inversa de un servicio sin documentación y reemplazo con comportamiento idéntico.
+Ingeniería inversa de un servicio HTTP sin documentación y reemplazo con comportamiento idéntico,
+errores incluidos. Enunciado completo: [`material/README.md`](material/README.md).
 
-- **Reemplazo desplegado:** _pendiente_
-- **Especificación:** [`spec/`](spec/)
-- **Log de experimentos:** [`experiments/`](experiments/)
+| Entregable | Dónde |
+|---|---|
+| Reemplazo desplegado | _pendiente_ — código en [`replacement/`](replacement/) |
+| Especificación | [`spec/especificacion.md`](spec/) |
+| Log de experimentos | [`experimentos.jsonl`](experimentos.jsonl) |
 
-Material del reto (incluye formato de entregables): [`material/`](material/)
+## Explorar
+
+```bash
+cp .env.example .env   # pon tu token en CAJA_TOKEN
+python3 tools/probe.py seq s1 "PING ignora el control" "PING;00"
+```
+
+Todo request al original pasa por `tools/probe.py` y queda en `experimentos.jsonl`.
+Los subagentes del equipo viven en `.claude/agents/`.
