@@ -1,6 +1,9 @@
 // Reemplazo de la caja negra. Todo comportamiento cita los ids de experimentos.jsonl.
-// ponytail: estado en memoria de un solo proceso; el set le habla a un solo proceso (material/README.md).
+// Estado: en Vercel varias instancias pueden atender el set, así que vive en Upstash Redis (KV_REST_API_*).
+// Sin esas variables (local, tests) cae al Map en memoria de un solo proceso.
 // "supuesto:" = no observado en el log; es el default del reemplazo (ver spec/arquitectura.md).
+
+import { Redis } from "@upstash/redis";
 
 export type Reply = { status: number; body: unknown; headers?: Record<string, string> };
 
@@ -13,6 +16,36 @@ const newStore = (): Store => ({ cuentas: new Map(), ops: new Map(), nextAC: 1, 
 const g = globalThis as unknown as { __caja?: { store: Store; xreq: number } };
 g.__caja ??= { store: newStore(), xreq: 0 };
 const S = g.__caja;
+
+const kvUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+const kvToken = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+const redis = kvUrl && kvToken ? new Redis({ url: kvUrl, token: kvToken }) : null;
+// Prefijo por entorno: preview y production comparten la base de Upstash, no el estado.
+const K = ((p) => ({ store: `${p}:store`, xreq: `${p}:xreq`, lock: `${p}:lock` }))(`caja:${process.env.VERCEL_ENV ?? "local"}`);
+
+type Dump = { cuentas: [string, number][]; ops: [string, Op][]; nextAC: number; nextOP: number };
+const load = (d: Dump | null): Store =>
+  d ? { cuentas: new Map(d.cuentas), ops: new Map(d.ops), nextAC: d.nextAC, nextOP: d.nextOP } : newStore();
+const dump = (st: Store): Dump => ({ ...st, cuentas: [...st.cuentas], ops: [...st.ops] });
+const UNLOCK = "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0";
+
+// ponytail: lock global (un token => un estado); leer-mutar-escribir el Store entero porque /__reset lo deja chico.
+async function withStore<T>(fn: (st: Store) => T): Promise<T> {
+  if (!redis) return fn(S.store);
+  const id = crypto.randomUUID();
+  for (let i = 0; !(await redis.set(K.lock, id, { nx: true, px: 5000 })); i++) {
+    if (i >= 200) throw new Error("caja: lock ocupado");
+    await new Promise((r) => setTimeout(r, 15));
+  }
+  try {
+    const st = load(await redis.get<Dump>(K.store));
+    const out = fn(st);
+    await redis.set(K.store, dump(st));
+    return out;
+  } finally {
+    await redis.eval(UNLOCK, [K.lock], [id]);
+  }
+}
 
 const err = (status: number, error: string, mensaje: string, extra?: object): Reply => ({
   status,
@@ -28,7 +61,7 @@ const ROUTES = new Set(["GET /health", "POST /__reset", "POST /msg"]);
 // mayúsculas, el resto de caracteres no suma (ids 61,63,83: espacios ignorados). Control = 98 - (100*N mod 97).
 // ids 123-128 refutan "(1-3N) mod 97": AC-0038 acepta 97 y rechaza 0; AC-0070 acepta 98 y rechaza 1;
 // AC-0005 acepta 2 y rechaza 99 (rango 2..98).
-function control(payload: string): number {
+export function control(payload: string): number {
   let h = 0;
   for (const ch of payload.toUpperCase()) {
     if (ch >= "0" && ch <= "9") h = (h * 10 + (ch.charCodeAt(0) - 48)) % 97;
@@ -178,7 +211,7 @@ function msg(st: Store, raw: string): Reply {
   }
 }
 
-export function handle(method: string, path: string, auth: string | null, raw: string): Reply {
+export async function handle(method: string, path: string, auth: string | null, raw: string): Promise<Reply> {
   // Ruta+método antes que auth, incluso con token inválido o ausente (ids 69,72-75,77,89-92,103-106).
   // HEAD /msg -> 404 sin cuerpo (id 93); la ruta no define HEAD, así que cae aquí y la capa HTTP lo vacía.
   if (!ROUTES.has(`${method} ${path}`)) return E404();
@@ -190,12 +223,12 @@ export function handle(method: string, path: string, auth: string | null, raw: s
   if (path === "/health") return { status: 200, body: { ok: true } }; // ids 2,27
   if (path === "/__reset") {
     // id 3,24: 200 {ok:true}; reinicia cuentas/ops/contadores pero NO X-Req (id 24: X-Req sigue en 21).
-    S.store = newStore();
+    await withStore((st) => Object.assign(st, newStore()));
     return { status: 200, body: { ok: true } };
   }
   // X-Req: cuenta cada POST /msg autenticado, con cualquier resultado (ids 31,33,40-42,46); no cuenta /health,
   // /__reset, 404 ni 401 (ids 27,29,35,37-39,44,45). Los headers no se comparan en el set; se replica por fidelidad.
-  const xreq = String(++S.xreq);
-  const r = msg(S.store, raw);
+  const xreq = String(redis ? await redis.incr(K.xreq) : ++S.xreq);
+  const r = await withStore((st) => msg(st, raw));
   return { ...r, headers: { "X-Req": xreq } };
 }

@@ -6,7 +6,7 @@ const body = (b: ArrayBuffer) => new TextDecoder("utf-8", { ignoreBOM: true }).d
 // Una sola puerta: todas las rutas y métodos van a lib/service, que decide como el original.
 async function route(req: Request) {
   const { pathname } = new URL(req.url);
-  const res = handle(req.method, pathname, req.headers.get("authorization"), body(await req.arrayBuffer()));
+  const res = await handle(req.method, pathname, req.headers.get("authorization"), body(await req.arrayBuffer()));
   const isText = typeof res.body === "string";
   // HEAD: sin cuerpo (log id 93)
   const out = req.method === "HEAD" ? null : isText ? (res.body as string) : JSON.stringify(res.body);
