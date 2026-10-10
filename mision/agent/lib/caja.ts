@@ -106,6 +106,7 @@ export async function fijarTests(ctx: Ctx, resumen: string) {
  *  1. regla 2: el reemplazo no puede hablar con el original ni con otro reemplazo;
  *  2. el log solo crece: las filas de origin/main siguen iguales (salvo `conclusion`), nadie reescribió evidencia;
  *  3. tests/ intactos desde que el tester los fijó (.gate/tests.sha);
+ *  3b. openapi.yaml y docs/api/*.md al día con lib/service.ts (check_openapi.py de origin/main);
  *  4. build limpio (sin .next viejo) + servidor de cero en :3111;
  *  5. replay.py DE origin/main (no el del sandbox: el implementador tiene bash) sobre todo el log;
  *  6. suite e2e completa (contrato, ejemplos y los tests de la misión) sobre el mismo servidor.
@@ -121,6 +122,9 @@ export async function verificar(ctx: Ctx) {
   // ponytail: el sha vive en el sandbox; un bash decidido podría reescribirlo. El PR muestra el diff de tests/ igual.
   const tests = await sh(s, "[ ! -f .gate/tests.sha ] || git diff --stat --exit-code $(cat .gate/tests.sha) -- tests");
   if (tests.exitCode !== 0) return { ok: false, etapa: "tests-tocados", detalle: tests.stdout.slice(-3000) };
+
+  const oa = await sh(s, "mkdir -p .gate/tools && git show origin/main:tools/check_openapi.py > .gate/check_openapi.py && python3 .gate/check_openapi.py");
+  if (oa.exitCode !== 0) return { ok: false, etapa: "openapi", detalle: oa.stdout.slice(-3000) };
 
   const build = await sh(s, "rm -rf .next && pnpm build > /tmp/build.log 2>&1; rc=$?; tail -40 /tmp/build.log; exit $rc");
   if (build.exitCode !== 0) return { ok: false, etapa: "build", detalle: build.stdout };

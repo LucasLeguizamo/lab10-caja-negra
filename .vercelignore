@@ -2,15 +2,20 @@
 .env.*
 !.env.example
 .token.lock
-experimentos.jsonl
-material/
-spec/
-tools/
-.claude/
-.agents/
-mision/node_modules/
-mision/.eve/
-mision/.output/
-tests/
-e2e.config.ts
-.e2e/
+# Anclados a la raíz con "/": sin barra, "tools/" también excluía mision/agent/tools/ y el agente se desplegaba
+# sin sus herramientas (eve le daba las de fábrica).
+/experimentos.jsonl
+/material/
+/spec/
+/tools/
+/.claude/
+/.agents/
+/mision/node_modules/
+/mision/.eve/
+/mision/.output/
+/tests/
+/e2e.config.ts
+/.e2e/
+# Documentación de la API: vive en el repo, nunca se sirve (el original da 404 E404 en /openapi.json y /msg.md).
+/openapi.yaml
+/docs/

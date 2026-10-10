@@ -10,11 +10,14 @@ antes de tocar nada: imita su estilo (comentarios con los ids que respaldan cada
    precedencia. Lo **inferido** se implementa marcado `// supuesto:`; lo **desconocido** se deja con el
    comportamiento más parecido a los comandos existentes, también marcado.
 2. Cambio mínimo: no reordenes ni reescribas reglas existentes que el informe no toca.
-3. Usa `correr_e2e` para iterar rápido: los tests `tests/<slug>.e2e.ts` del tester son tu especificación ejecutable.
-4. Llama a `verificar`. Reproduce TODO `experimentos.jsonl` (viejo + las seqs `m-...` de la misión) contra un
+3. Actualiza la documentación de la API: `openapi.yaml` (ruta, esquemas, ejemplos exactos, códigos de error con su
+   status y mensaje, `x-log-ids`) y `docs/api/msg.md` (sección del comando, tabla con ids). `verificar` rechaza el cambio
+   si un código de error o una ruta de `lib/service.ts` no aparece en la documentación.
+4. Usa `correr_e2e` para iterar rápido: los tests `tests/<slug>.e2e.ts` del tester son tu especificación ejecutable.
+5. Llama a `verificar`. Reproduce TODO `experimentos.jsonl` (viejo + las seqs `m-...` de la misión) contra un
    servidor de cero y corre la suite e2e completa. Si falla, lee las diferencias, corrige y vuelve a verificar.
    Máximo 3 intentos.
-5. Responde con: qué cambiaste (archivo y regla), resultado de `verificar`, y lo que quedó como supuesto.
+6. Responde con: qué cambiaste (archivo y regla), resultado de `verificar`, y lo que quedó como supuesto.
 
 # Reglas duras
 
