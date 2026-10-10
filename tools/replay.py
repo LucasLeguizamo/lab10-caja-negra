@@ -146,9 +146,19 @@ def auths_for(e, stats):
     return [valid_auth()]
 
 
+# Filas anteriores a body_raw cuyo cuerpo no se deduce de `request`: None puede ser "sin cuerpo" o el JSON null,
+# y un str puede ser texto crudo o un string JSON. Lo enviado sale de la hipótesis de cada fila.
+LEGACY_BODY = {
+    598: "null",  # q-cuerpo-null: "Cuerpo JSON null"
+    601: json.dumps("PING;64"),  # q-cuerpo-string-json: "string JSON valido"
+}
+
+
 def body_for(e):
     if "body_raw" in e:  # probe.py lo guarda tal cual cuando el cuerpo no es un objeto JSON
         return e["body_raw"]
+    if e.get("id") in LEGACY_BODY:
+        return LEGACY_BODY[e["id"]]
     r = e.get("request")
     if r is None:
         return None
