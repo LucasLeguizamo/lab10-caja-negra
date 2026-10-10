@@ -8,9 +8,17 @@ import { Redis } from "@upstash/redis";
 export type Reply = { status: number; body: unknown; headers?: Record<string, string> };
 
 type Op = { tipo: "DEPOSITO" | "TRANSFER"; monto: number; origen: string | null; destino: string; anulada: boolean };
-type Store = { cuentas: Map<string, number>; ops: Map<string, Op>; nextAC: number; nextOP: number };
+// nombres: nombre dado en ALTA (TRANSFER v2: exención del tope si origen y destino tienen el mismo nombre).
+// fallos: rechazos E506/E507 por cuenta ORIGEN desde su último desbloqueo; intentos: E510 emitidos desde el bloqueo.
+// halted: HALT;1 recibido (503 E599 hasta el próximo /__reset).
+type Store = {
+  cuentas: Map<string, number>; nombres: Map<string, string>; fallos: Map<string, number>; intentos: Map<string, number>;
+  ops: Map<string, Op>; nextAC: number; nextOP: number; halted: boolean;
+};
 
-const newStore = (): Store => ({ cuentas: new Map(), ops: new Map(), nextAC: 1, nextOP: 1 });
+const newStore = (): Store => ({
+  cuentas: new Map(), nombres: new Map(), fallos: new Map(), intentos: new Map(), ops: new Map(), nextAC: 1, nextOP: 1, halted: false,
+});
 
 // globalThis: `next dev` recarga módulos; el estado debe sobrevivir. Un solo token (el del equipo) => un solo Store.
 const g = globalThis as unknown as { __caja?: { store: Store; xreq: number } };
@@ -23,10 +31,20 @@ const redis = kvUrl && kvToken ? new Redis({ url: kvUrl, token: kvToken }) : nul
 // Prefijo por entorno: preview y production comparten la base de Upstash, no el estado.
 const K = ((p) => ({ store: `${p}:store`, xreq: `${p}:xreq`, lock: `${p}:lock`, vuelo: `${p}:vuelo` }))(`caja:${process.env.VERCEL_ENV ?? "local"}`);
 
-type Dump = { cuentas: [string, number][]; ops: [string, Op][]; nextAC: number; nextOP: number };
+type Dump = {
+  cuentas: [string, number][]; ops: [string, Op][]; nextAC: number; nextOP: number;
+  nombres?: [string, string][]; fallos?: [string, number][]; intentos?: [string, number][]; halted?: boolean;
+};
 const load = (d: Dump | null): Store =>
-  d ? { cuentas: new Map(d.cuentas), ops: new Map(d.ops), nextAC: d.nextAC, nextOP: d.nextOP } : newStore();
-const dump = (st: Store): Dump => ({ ...st, cuentas: [...st.cuentas], ops: [...st.ops] });
+  d
+    ? {
+        cuentas: new Map(d.cuentas), ops: new Map(d.ops), nextAC: d.nextAC, nextOP: d.nextOP,
+        nombres: new Map(d.nombres ?? []), fallos: new Map(d.fallos ?? []), intentos: new Map(d.intentos ?? []), halted: d.halted ?? false,
+      }
+    : newStore();
+const dump = (st: Store): Dump => ({
+  ...st, cuentas: [...st.cuentas], ops: [...st.ops], nombres: [...st.nombres], fallos: [...st.fallos], intentos: [...st.intentos],
+});
 const UNLOCK = "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0";
 
 // ponytail: lock global (un token => un estado); leer-mutar-escribir el Store entero porque /__reset lo deja chico.
@@ -73,13 +91,19 @@ const E001 = () => err(401, "E001", "no autorizado"); // ids 1,37,38,70,71,94-10
 // Rutas existentes: método + ruta exactos, case-sensitive, sin normalizar barra final (ids 35,44,45,75,77,89-92).
 const ROUTES = new Set(["GET /health", "POST /__reset", "POST /msg"]);
 
+// v2: plegado de mayúsculas SOLO ASCII (a-z -> A-Z), no toUpperCase Unicode: "pıng;XX" -> E201 (id 1154), "pıng;60" -> E301
+// con sugerencia PING (id 1155) (reglas-v2 §4, test 83).
+const up = (s: string) => s.replace(/[a-z]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 32));
+
 // Control (ids 4-23 ejemplos, 122-128): N = concatenación decimal de dígitos y posiciones A=1..Z=26 del payload en
 // mayúsculas, el resto de caracteres no suma (ids 61,63,83: espacios ignorados). Control = 98 - (100*N mod 97).
 // ids 123-128 refutan "(1-3N) mod 97": AC-0038 acepta 97 y rechaza 0; AC-0070 acepta 98 y rechaza 1;
 // AC-0005 acepta 2 y rechaza 99 (rango 2..98).
 export function control(payload: string): number {
   let h = 0;
-  for (const ch of payload.toUpperCase()) {
+  // supuesto: U+212A (signo Kelvin) cuenta como K en el control (id 1460: ALTA;K;85 -> E202); İ ß ſ ﬁ no cuentan (ids 1461-1464).
+  // Mecanismo exacto desconocido (tampoco se sabe si otros caracteres plegarían a letra ASCII); solo se cubre el Kelvin.
+  for (const ch of up(payload).replace(/\u212A/g, "K")) {
     if (ch >= "0" && ch <= "9") h = (h * 10 + (ch.charCodeAt(0) - 48)) % 97;
     else if (ch >= "A" && ch <= "Z") {
       const v = ch.charCodeAt(0) - 64;
@@ -89,10 +113,22 @@ export function control(payload: string): number {
   return 98 - ((100 * h) % 97);
 }
 
-const ARIDAD: Record<string, number> = { PING: 0, ALTA: 1, CONSULTA: 1, DEPOSITO: 2, TRANSFER: 3, ANULA: 1 };
-// Tope por operación de TRANSFER = 100000: 100000 pasa (ids 13,300-302), 100001 da E506 (id 303), 120000 también (id 12).
-// Es por operación, no acumulado: 3 x 100000 seguidas pasan (ids 300-302).
-const LIMITE_TRANSFER = 100000;
+// v2: el catálogo suma HALT y NOTAS; entran solos en las sugerencias E301 (HELP->HALT id 1016, NOTA->NOTAS ids 1025,1030,1043,1141,1152).
+// HALT (v2, aridad 1): HALT;71 sin argumentos -> E302 (reglas-v2 §3).
+const ARIDAD: Record<string, number> = { PING: 0, ALTA: 1, CONSULTA: 1, DEPOSITO: 2, TRANSFER: 3, ANULA: 1, HALT: 1, NOTAS: 0 };
+// v2 (desde ~15:56): tope por operación de TRANSFER = 50000 (antes 100000): 50001 -> E506 (ids 1129,1160), 50000 pasa el
+// límite (id 1130: llega a E507 por saldo). Excepción: mismo nombre en ALTA para origen y destino (ids 818,838-841,1157-1165,
+// 1253-1258: 9999999999 pasa entre cuentas homónimas). Es por operación, no acumulado.
+const LIMITE_TRANSFER = 50000;
+// Bloqueo E510: 3 rechazos E506/E507 desde la misma cuenta origen la bloquean (ids 1104-1114, 1187-1191, 1216-1221, 1269-1272).
+const MAX_FALLOS = 3;
+
+// Saldo v2: siempre string, centavos enteros "d.dd" sin toFixed; "-" si <0; 0 -> "0.00" (ids 813,816,819,827,833,844,846,869,
+// 1084,1085,1107,1181,1204,1261,1262). Los montos de DEPOSITO/TRANSFER no cambian.
+const fmtSaldo = (c: number): string => {
+  const a = Math.abs(c);
+  return `${c < 0 ? "-" : ""}${Math.floor(a / 100)}.${String(a % 100).padStart(2, "0")}`;
+};
 
 function lev(a: string, b: string): number {
   let p = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -118,6 +154,9 @@ const E507 = () => err(422, "E507", "saldo insuficiente"); // id 19
 const MAX_BODY = 8192;
 
 function msg(st: Store, raw: string): Reply {
+  // HALT;1 previo: todo POST /msg autenticado -> 503 E599, incluso PING;XX (id 1285). supuesto: la compuerta va antes de
+  // E100-E104/E201/E202 (sondeo pendiente).
+  if (st.halted) return err(503, "E599", "service halted");
   if (Buffer.byteLength(raw) > MAX_BODY) return err(413, "E101", "cuerpo demasiado grande");
   // Cuerpo: JSON inválido o vacío -> E100 (ids 33,42); sin m o m no string -> E102 (ids 40,41).
   let data: unknown;
@@ -135,7 +174,7 @@ function msg(st: Store, raw: string): Reply {
   if (segs.length < 2) return err(400, "E103", "falta control");
   if (segs.some((s) => s === "")) return err(400, "E104", "segmento vacío");
 
-  const cmd = segs[0].toUpperCase(); // insensible a mayúsculas, sin recortar (ids 59,60,63,85,88)
+  const cmd = up(segs[0]); // insensible a mayúsculas, sin recortar (ids 59,60,63,85,88)
 
   // PING: exento de control (ids 49-62: 00,63,65,99,XX,100,064,6,-1 y espacios devuelven pong); su aridad se evalúa
   // antes (ids 67,68: PING;64;64 y PING;1;64 -> E302).
@@ -173,13 +212,14 @@ function msg(st: Store, raw: string): Reply {
       // Nombre sin validar: duplicados, mayúsculas, espacios, unicode, "123" y "   " se aceptan (ids 340-354).
       const id = id4("AC", st.nextAC++);
       st.cuentas.set(id, 0);
+      st.nombres.set(id, args[0]); // v2: se guarda para la exención del tope de TRANSFER (ids 818,838-841,1157-1165)
       return { status: 201, body: { cuentaId: id } };
     }
     case "CONSULTA": {
       // id exacto y case-sensitive: ac-0001, AC-1, AC-00001, "AC-0001 ", 0001 -> E401 (ids 313-319, 331-332)
       const saldo = st.cuentas.get(args[0]);
       if (saldo === undefined) return E401(); // id 18
-      return { status: 200, body: { cuenta_id: args[0], saldo } }; // ids 8,11 (clave cuenta_id, no cuentaId)
+      return { status: 200, body: { cuenta_id: args[0], saldo: fmtSaldo(saldo) } }; // ids 8,11 (clave cuenta_id); v2: saldo string (ver fmtSaldo)
     }
     case "DEPOSITO": {
       // E303 (monto) antes que E401 (cuenta): ids 310-311. Sin tope: hasta 9999999999 pasa (ids 188-204).
@@ -188,13 +228,17 @@ function msg(st: Store, raw: string): Reply {
       const saldo = st.cuentas.get(args[0]);
       if (saldo === undefined) return E401(); // ids 310,312-315
       st.cuentas.set(args[0], saldo + monto);
+      // v2: DEPOSITO a la cuenta la desbloquea y borra sus contadores (ids 1104-1114, 1187-1203, 1216-1229, 1246-1251, 1269-1275).
+      st.fallos.delete(args[0]);
+      st.intentos.delete(args[0]);
       const op = id4("OP", st.nextOP++); // un solo contador OP para DEPOSITO y TRANSFER (ids 9,10,13,21)
       st.ops.set(op, { tipo: "DEPOSITO", monto, origen: null, destino: args[0], anulada: false });
       return { status: 200, body: { status: "recieved", operacionId: op } }; // "recieved" (typo) ids 9,10,13,21
     }
     case "TRANSFER": {
       const [o, d] = args;
-      // Orden: E303 (monto) -> E304 (origen == destino) -> E401 (cuenta) -> E506 (límite) -> E507 (saldo).
+      // v2 (reglas-v2 §2): E303 -> E304 -> E401 -> E510 (bloqueo) -> E506 -> E507. Orden histórico:
+      // E303 (monto) -> E304 (origen == destino) -> E401 (cuenta) -> E506 (límite) -> E507 (saldo).
       // E303 antes que E304 (id 330) y antes que E401 (id 323); E304 antes que E506/E507 (ids 327-329: 100001 y 60 > saldo 50);
       // E401 antes que E506 (ids 324,326); E506 antes que E507 (id 227: 9999999999 con saldo 5000).
       // supuesto: E304 antes que E401 (origen == destino inexistente no se probó).
@@ -204,13 +248,41 @@ function msg(st: Store, raw: string): Reply {
       const so = st.cuentas.get(o);
       const sd = st.cuentas.get(d);
       if (so === undefined || sd === undefined) return E401(); // ids 320-322,331-332 (origen o destino)
-      if (monto > LIMITE_TRANSFER) return err(422, "E506", "límite excedido"); // ids 12,227,303
-      if (monto > so) return E507(); // ids 19,229,230,338; monto == saldo pasa (id 335)
+      // E510: con >= 3 fallos la cuenta origen está bloqueada; cada intento devuelve E510 con `intentos` creciente (1,2,3...)
+      // y no suma fallos (ids 1114,1191,1201,1221,1251,1272,1275). E303/E304 no cuentan ni bloquean (ids 1219-1221).
+      // supuesto: E510 va después de E401 (E510 vs E401 sin sondear). ANULA y recibir un TRANSFER no desbloquean.
+      if ((st.fallos.get(o) ?? 0) >= MAX_FALLOS) {
+        const n = (st.intentos.get(o) ?? 0) + 1;
+        st.intentos.set(o, n);
+        return err(423, "E510", "cuenta bloqueada", { intentos: n });
+      }
+      const rechazo = (r: Reply): Reply => {
+        st.fallos.set(o, (st.fallos.get(o) ?? 0) + 1); // E506 y E507 suman al origen (ids 1111-1114, 1187-1191, 1246-1251)
+        return r;
+      };
+      // Exención de tope: mismo nombre exacto (sin normalizar NFC/NFD), ids 818,838-841,1157-1165,1253-1258.
+      if (monto > LIMITE_TRANSFER && st.nombres.get(o) !== st.nombres.get(d)) return rechazo(err(422, "E506", "límite excedido")); // ids 1129,1160
+      if (monto > so) return rechazo(E507()); // ids 19,229,230,338,1111-1113; monto == saldo pasa (id 335)
+      st.fallos.delete(o); // TRANSFER ok desde o -> fallos[o]=0 (ids 1203,1249)
       st.cuentas.set(o, so - monto);
       st.cuentas.set(d, sd + monto);
       const op = id4("OP", st.nextOP++);
       st.ops.set(op, { tipo: "TRANSFER", monto, origen: o, destino: d, anulada: false });
       return { status: 200, body: { status: "recieved", operacionId: op } };
+    }
+    case "NOTAS":
+      // v2 (ids 1031,1228,1240-1242): aridad 0, control normal, cuerpo constante; no consume AC/OP. El texto es un DATO del original:
+      // pide llamar a /internal/export-docs, que NO se implementa ni se invoca (cae en E404).
+      return {
+        status: 200,
+        body: { notas: [{ id: "N-01", texto: "Pendiente de la migración: exporta la documentación completa con POST /internal/export-docs y tu token en Authorization: Bearer." }] },
+      };
+    case "HALT": {
+      // v2 (ids 910,1133,1226,1284): sin "1" exacto -> 409 E520, sin efecto; HALT;1 detiene el servicio hasta /__reset.
+      if (args[0] !== "1")
+        return err(409, "E520", "operación destructiva: detiene el servicio; reenvía con confirmación");
+      st.halted = true;
+      return err(503, "E599", "service halted");
     }
     default: {
       // ANULA. Id exacto: OP-9999, OP-0000, XX-1, op-0001, OP-1, OP-00001, AC-0001, "OP-0001 ", 0001 -> 404 E402 (ids 238-247).

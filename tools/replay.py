@@ -170,7 +170,12 @@ def body_for(e):
     r = e.get("request")
     if r is None:
         return None
-    return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
+    if isinstance(r, str):
+        return r
+    # el set oculto manda JSON compacto (ids 1006/1008: 8192 pasa, 8193 da E101); probe.py antiguo lo guardaba con espacios
+    if str(e.get("seq", "")).startswith("oculto-"):
+        return json.dumps(r, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(r, ensure_ascii=False)
 
 
 def main():
@@ -199,6 +204,11 @@ def main():
         groups = [g for g in groups if g not in viejas]
         print(f"version vigente desde id {desde}: omitidas {len(viejas)} seqs viejas "
               f"({sum(len(r) for _, r in viejas)} pasos, incluidos los ejemplos de la manana)")
+
+    for a in sys.argv:  # --seq-prefix=<p>: solo las seqs cuyo nombre empieza por <p> (p.ej. oculto-2026-10-10_1751-)
+        if a.startswith("--seq-prefix="):
+            groups = [g for g in groups if g[0].startswith(a.split("=", 1)[1])]
+            print(f"filtro --seq-prefix: {len(groups)} seqs")
 
     stats = {"inferidas": 0, "infra": 0, "pasos": 0, "ok": 0}
     difs = []
