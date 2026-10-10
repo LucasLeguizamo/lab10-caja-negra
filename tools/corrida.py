@@ -72,7 +72,7 @@ def diff(a):
     token = os.environ["CAJA_TOKEN"]
     tests = [json.loads(l) for l in Path(a.archivo).read_text().splitlines() if l.strip()]
     if a.solo:
-        tests = [t for t in tests if t["n"] in {int(x) for x in a.solo.split(",")}]
+        tests = [t for t in tests if t["n"] in {int(x) for x in a.solo.split(",") if x}]
     tag = Path(a.archivo).stem
     causa = collections.Counter()
     for t in tests:
