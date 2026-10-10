@@ -41,7 +41,8 @@ export const verificar = defineTool({
   description:
     "Compuerta de paridad: regla 2 (el reemplazo no llama a nadie), log solo crece, tests/ intactos desde que el " +
     "tester los fijó, pnpm build, servidor de cero en :3111, tools/replay.py de TODO el log y la suite e2e completa. " +
-    "ok:false trae la etapa y las diferencias.",
+    "ok:false trae la etapa y las diferencias. " +
+    "Si devuelve pendiente: true, sigue corriendo en el sandbox; vuelve a llamarla (no relances otra cosa).",
   inputSchema: z.object({}),
   execute: (_input, ctx) => caja.verificar(ctx),
 });
@@ -49,7 +50,8 @@ export const verificar = defineTool({
 export const correr_e2e = defineTool({
   description:
     "Corre la suite e2e (tester-army/e2e, tests/**/*.e2e.ts) contra el reemplazo actual construido y arrancado de " +
-    "cero en :3111. Devuelve ok y la salida (qué test falló y por qué). No toca el original.",
+    "cero en :3111. Devuelve ok y la salida (qué test falló y por qué). No toca el original. " +
+    "Si devuelve pendiente: true, sigue corriendo en el sandbox; vuelve a llamarla (no relances otra cosa).",
   inputSchema: z.object({}),
   execute: (_input, ctx) => caja.correrE2e(ctx),
 });

@@ -67,6 +67,44 @@ export async function vigia(ctx: Ctx) {
   });
 }
 
+// Un paso de workflow en Vercel muere a los 300 s (Hobby) y se re-ejecuta: build + replay + e2e no caben. Lo largo
+// corre desacoplado en el sandbox y la herramienta espera como mucho ESPERA_MS; si no terminó, devuelve pendiente y el
+// agente vuelve a llamar (la re-entrega del paso también cae aquí y espera al mismo proceso, no lanza otro).
+const ESPERA_MS = 200_000;
+type Largo = { hecho: true; rc: number; salida: string } | { hecho: false };
+
+async function largo(s: SandboxSession, nombre: string, script: string): Promise<Largo> {
+  const f = `/tmp/largo-${nombre}`;
+  const estado = await sh(
+    s,
+    `if [ -f ${f}.rc ]; then echo fin; elif [ -f ${f}.pid ] && kill -0 $(cat ${f}.pid) 2>/dev/null; then echo corre; else echo nada; fi`,
+  );
+  if (estado.stdout.trim() === "nada") {
+    const r = await sh(
+      s,
+      `rm -f ${f}.rc ${f}.out; (bash -c "$SCRIPT" > ${f}.out 2>&1 < /dev/null; echo $? > ${f}.rc) > /dev/null 2>&1 < /dev/null & echo $! > ${f}.pid`,
+      { SCRIPT: script },
+    );
+    if (r.exitCode !== 0) throw new Error(`no arrancó ${nombre}: ${r.stderr}`);
+  }
+  for (const t0 = Date.now(); Date.now() - t0 < ESPERA_MS; await new Promise((ok) => setTimeout(ok, 5_000))) {
+    const rc = (await sh(s, `cat ${f}.rc 2>/dev/null`)).stdout.trim();
+    if (rc) {
+      // Se consume al leerlo: la próxima llamada arranca una corrida nueva con el código de ese momento.
+      const out = await sh(s, `cat ${f}.out; rm -f ${f}.rc ${f}.out ${f}.pid`);
+      return { hecho: true, rc: Number(rc), salida: out.stdout };
+    }
+  }
+  return { hecho: false };
+}
+
+const PENDIENTE = (que: string) => ({
+  ok: false,
+  pendiente: true,
+  etapa: "pendiente",
+  detalle: `${que} sigue corriendo en el sandbox (tope de 300 s por paso): vuelve a llamar a esta herramienta para esperar el resultado.`,
+});
+
 // Servidor de cero en :3111 (X-Req vuelve a 1), con el token que usan replay.py y los tests e2e.
 const ARRANCAR = [
   "[ -f /tmp/srv.pid ] && kill $(cat /tmp/srv.pid) 2>/dev/null; true", // sin lsof: la imagen del sandbox no lo garantiza
@@ -79,10 +117,19 @@ const E2E = "E2E_TELEMETRY_DISABLED=1 E2E_BASE_URL=http://localhost:3111 pnpm e2
 /** Suite e2e (tests/**\/*.e2e.ts, tester-army/e2e) contra el código actual. Construye si hace falta. */
 export async function correrE2e(ctx: Ctx) {
   const s = await ctx.getSandbox(environment);
-  const build = await sh(s, "pnpm build > /tmp/build.log 2>&1; rc=$?; tail -40 /tmp/build.log; exit $rc");
-  if (build.exitCode !== 0) return { ok: false, etapa: "build", detalle: build.stdout };
-  const r = await sh(s, [...ARRANCAR, `${E2E}; rc=$?`, PARAR, "tail -80 /tmp/e2e.log; exit $rc"].join("; "));
-  return { ok: r.exitCode === 0, etapa: "e2e", detalle: r.stdout };
+  const r = await largo(
+    s,
+    "e2e",
+    [
+      "pnpm build > /tmp/build.log 2>&1 || { echo '== build'; tail -40 /tmp/build.log; exit 1; }",
+      ...ARRANCAR,
+      `${E2E}; rc=$?`,
+      PARAR,
+      'echo "== e2e"; tail -80 /tmp/e2e.log; exit $rc',
+    ].join("; "),
+  );
+  if (!r.hecho) return PENDIENTE("La suite e2e");
+  return { ok: r.rc === 0, etapa: r.salida.includes("== build") ? "build" : "e2e", detalle: r.salida };
 }
 
 /**
@@ -126,12 +173,11 @@ export async function verificar(ctx: Ctx) {
   const oa = await sh(s, "mkdir -p .gate/tools && git show origin/main:tools/check_openapi.py > .gate/check_openapi.py && python3 .gate/check_openapi.py");
   if (oa.exitCode !== 0) return { ok: false, etapa: "openapi", detalle: oa.stdout.slice(-3000) };
 
-  const build = await sh(s, "rm -rf .next && pnpm build > /tmp/build.log 2>&1; rc=$?; tail -40 /tmp/build.log; exit $rc");
-  if (build.exitCode !== 0) return { ok: false, etapa: "build", detalle: build.stdout };
-
-  const r = await sh(
+  const r = await largo(
     s,
+    "compuerta",
     [
+      "rm -rf .next && pnpm build > /tmp/build.log 2>&1 || { echo '== build'; tail -40 /tmp/build.log; exit 1; }",
       "mkdir -p .gate/tools && git show origin/main:tools/replay.py > .gate/tools/replay.py",
       "ln -sf ../experimentos.jsonl .gate/experimentos.jsonl && ln -sfn ../material .gate/material",
       ...ARRANCAR,
@@ -142,7 +188,8 @@ export async function verificar(ctx: Ctx) {
       '[ $rp -eq 0 ] && [ $ee -eq 0 ]',
     ].join("; "),
   );
-  return { ok: r.exitCode === 0, etapa: "replay+e2e", detalle: r.stdout };
+  if (!r.hecho) return PENDIENTE("La compuerta (build + replay + e2e)");
+  return { ok: r.rc === 0, etapa: r.salida.includes("== build") ? "build" : "replay+e2e", detalle: r.salida };
 }
 
 // Filas de origin/main idénticas en el log actual (ignorando `conclusion`, que concluir sí puede añadir).
