@@ -17,12 +17,25 @@ export const modelo = () => openrouter(MODELO_ID);
 export const LIMITES = {
   maxInputTokensPerSession: 8_000_000,
   maxOutputTokensPerSession: 400_000,
-  // Menor que el TTL del candado: una sesión muerta nunca deja la rama mision/* "viva" para el vigía.
-  sessionTimeoutMs: 100 * 60 * 1_000,
+  // Hobby solo permite un cron diario: UNA sesión al día que duerme entre pasadas (09:15 → 19:15 local + margen).
+  sessionTimeoutMs: 11 * 60 * 60 * 1_000,
 };
 
-// Un reclamo de más de 2 h es de una sesión que ya expiró (100 min): el vigía lo trata como huérfano.
+// Un reclamo sin publicar de más de 2 h es huérfano: en la sesión diaria las pasadas y las misiones van en serie, así
+// que solo puede quedar uno así si la sesión murió a mitad de misión.
 export const TTL_CANDADO_S = 2 * 60 * 60;
+
+// Hora local del reto: UTC-5. Última pasada a las 19:15: después, una misión no llega a revisarse antes de las 20:00.
+const UTC_OFFSET_H = -5;
+const CORTE_LOCAL = { h: 19, m: 15 };
+const ENTRE_PASADAS_S = 60 * 60;
+
+/** Segundos hasta la próxima pasada del vigía, o null si ya no cabe otra hoy. */
+export function proximaPasadaS(ahora = new Date()): number | null {
+  const local = new Date(ahora.getTime() + UTC_OFFSET_H * 3_600_000);
+  const corte = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), CORTE_LOCAL.h - UTC_OFFSET_H, CORTE_LOCAL.m);
+  return ahora.getTime() + ENTRE_PASADAS_S * 1000 <= corte ? ENTRE_PASADAS_S : null;
+}
 
 // eve no tiene metadata de modelos fuera del AI Gateway: hay que declarar la ventana para la compactación.
 // El modelo admite 1.048.576; se declara menos a propósito para compactar antes (más barato y menos degradación).

@@ -18,7 +18,10 @@ export type Politica = { allow: Record<string, Regla[]> };
 export function politica(abrir: Apertura[] = []): Politica {
   const allow: Record<string, Regla[]> = Object.fromEntries(BASE.map((h) => [h, []]));
   if (abrir.includes("original")) {
-    allow[ORIGINAL_HOST] = [{ transform: [{ headers: { authorization: `Bearer ${requerir("CAJA_TOKEN_AGENTE")}` } }] }];
+    // Token propio del agente; si no hay, el personal (CAJA_TOKEN). Compartirlo exige que nadie sondee a mano mientras
+    // corre el vigía: cada token tiene su estado y un /__reset ajeno corrompe la seq en curso (regla 4).
+    const token = process.env.CAJA_TOKEN_AGENTE || requerir("CAJA_TOKEN");
+    allow[ORIGINAL_HOST] = [{ transform: [{ headers: { authorization: `Bearer ${token}` } }] }];
   }
   if (abrir.includes("github")) {
     const basic = Buffer.from(`x-access-token:${requerir("GITHUB_TOKEN")}`).toString("base64");

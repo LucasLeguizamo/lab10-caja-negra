@@ -5,7 +5,7 @@ errores incluidos. Enunciado completo: [`material/README.md`](material/README.md
 
 | Entregable | Dónde |
 |---|---|
-| Reemplazo desplegado | _pendiente_ — código en [`lib/service.ts`](lib/service.ts) |
+| Reemplazo desplegado | **https://lab10-caja-negra.vercel.app** — código en [`lib/service.ts`](lib/service.ts) |
 | Especificación | [`spec/especificacion.md`](spec/) |
 | Log de experimentos | [`experimentos.jsonl`](experimentos.jsonl) |
 
@@ -53,4 +53,6 @@ más de una instancia. Después, poner la URL de producción (no la de un previe
 
 ## Desplegar el agente
 
-Proyecto de Vercel **aparte**, desde `mision/`. Pasos y credenciales en [`mision/README.md`](mision/README.md#activar).
+Mismo proyecto de Vercel que el reemplazo: `vercel.json` define dos servicios, `app` (raíz) y `mision` (solo `/eve/*`).
+`vercel deploy --prod` desde la raíz despliega los dos. Detalle, variables y cómo disparar el vigía en
+[`mision/README.md`](mision/README.md#activar).

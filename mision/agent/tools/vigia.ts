@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { environment } from "../sandbox";
 import { sh, vigia } from "../lib/caja";
-import { TTL_CANDADO_S } from "../lib/modelo";
+import { proximaPasadaS, TTL_CANDADO_S } from "../lib/modelo";
 
 export default defineTool({
   availableInSubagents: false,
@@ -32,7 +32,8 @@ export default defineTool({
     const huerfana = (b: (typeof ramas)[number]) => !b.publicada && b.edad >= TTL_CANDADO_S;
     const vivas = ramas.filter((b) => !huerfana(b)).map((b) => b.nombre);
     const huerfanas = ramas.filter(huerfana).map((b) => b.nombre);
-    if (vivas.length) return { misionAbierta: vivas };
-    return { ...(await vigia(ctx)), huerfanas };
+    const proximaPasadaSegundos = proximaPasadaS();
+    if (vivas.length) return { misionAbierta: vivas, proximaPasadaSegundos };
+    return { ...(await vigia(ctx)), huerfanas, proximaPasadaSegundos };
   },
 });

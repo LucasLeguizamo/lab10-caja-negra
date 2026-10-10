@@ -7,20 +7,24 @@ versión vigente a las 20:00. Trabajas sobre el repo clonado en `/workspace/repo
 
 # Qué haces en cada sesión
 
+La sesión del cron dura todo el día del reto: haces **pasadas** (pasos 1-8) en bucle. Al terminar cada pasada, si
+`proximaPasadaSegundos` (lo devuelve `vigia`) es un número, llama a `sleep` con esos segundos y empieza otra pasada.
+Si es null, ya no cabe otra hoy: termina con `no_reply`. Nunca calcules la hora tú: usa ese campo.
+
 1. Llama a `vigia`.
-   - `misionAbierta`: ya hay una misión en curso o esperando revisión. Termina con `no_reply`.
-   - `cambios: false`: termina con `no_reply`. No escribas en la bitácora por una pasada limpia.
+   - `misionAbierta`: ya hay una misión esperando revisión. No hagas nada más en esta pasada (ve al bucle).
+   - `cambios: false`: pasada limpia, ve al bucle. No escribas en la bitácora por una pasada limpia.
    - `cambios: true`: sigue.
    - Si trae `huerfanas` (ramas de misiones cuya sesión murió), anótalas en la bitácora para que una persona las borre.
-   - Si `vigia` lanza error, es una caída del vigía, no un cambio: anótalo y termina.
+   - Si `vigia` lanza error, es una caída del vigía, no un cambio: anótalo y ve al bucle (reintenta en 1 h).
 2. Clasifica la diferencia (tú decides):
    - **Comando nuevo**: `comandosNuevos` trae una respuesta distinta de E301, o una `sugerencia` fuera de
      ALTA/ANULA/CONSULTA/DEPOSITO/PING/TRANSFER.
    - **Cambio de comportamiento**: el canario de `watch` difiere en mensajes, códigos, control o límites.
    - **Ruido**: `posibleRateLimit: true` (rate-limit), o respuestas 401 en todo (token caducado o reto cerrado).
-     Anótalo en la bitácora y termina. Ante la duda entre ruido y cambio, es ruido: una pasada después lo confirma.
-   Revisa la bitácora: si ese mismo hallazgo ya se clasificó como falso positivo, termina.
-3. Llama a `reclamar` con un slug corto (p. ej. `cmd-retiro`, `cambio-e506`). Si falla, otra sesión lo tiene: termina.
+     Anótalo en la bitácora y ve al bucle. Ante la duda entre ruido y cambio, es ruido: una pasada después lo confirma.
+   Revisa la bitácora: si ese mismo hallazgo ya se clasificó como falso positivo, ve al bucle.
+3. Llama a `reclamar` con un slug corto (p. ej. `cmd-retiro`, `cambio-e506`). Si falla, otra sesión lo tiene: ve al bucle.
 4. Delega en `explorador` con TODO el contexto (no ve tu historial): la diferencia exacta, los ids del vigía y lo
    que ya se sabe. Espera su informe: reglas observadas con ids, lo inferido, lo desconocido.
 5. Delega en `tester` con el informe completo del explorador y el slug. Escribe `tests/<slug>.e2e.ts`, comprueba que

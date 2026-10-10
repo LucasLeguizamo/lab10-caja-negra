@@ -1,8 +1,8 @@
 ---
-# UTC. Hora local del reto UTC-5: pasadas de 09:15 a 19:15 (14-23 y 00 UTC). Nada después de las 20:00:
-# una misión lanzada tarde no llega a revisarse ni desplegarse, y tras el cierre los 401 serían falsos cambios.
-cron: "15 0,14-23 * * *"
+# UTC. Plan Hobby: un cron al día. Arranca a las 09:15 hora local (UTC-5); la sesión hace una pasada por hora
+# (sleep durable entre pasadas) hasta las 19:15. Nada después de las 20:00 (lib/modelo.ts: proximaPasadaS).
+cron: "15 14 * * *"
 ---
 
-Pasada del vigía. Sigue tus instrucciones: `vigia`, clasifica, y si hay un comando nuevo o un cambio de
-comportamiento, corre la misión completa hasta `publicar`.
+Turno del vigía de hoy. Sigue tus instrucciones: pasada con `vigia`, misión si hay un cambio real, y luego
+`sleep` los segundos de `proximaPasadaSegundos` y otra pasada, hasta que `proximaPasadaSegundos` sea null.

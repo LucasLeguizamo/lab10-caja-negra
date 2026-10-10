@@ -8,7 +8,9 @@ spec/
 tools/
 .claude/
 .agents/
-mision/
+mision/node_modules/
+mision/.eve/
+mision/.output/
 tests/
 e2e.config.ts
 .e2e/

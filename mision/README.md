@@ -63,7 +63,9 @@ Local: `E2E_BASE_URL=http://localhost:3111 pnpm e2e` en la raíz, con **Node ≥
 | Reclamada hace ≥ 2 h y sin publicar | Huérfana (la sesión murió: timeout de 100 min < TTL de 2 h). Se ignora y se anota. |
 | Publicada (punta `feat(mision)…`) | Bloquea hasta que una persona mergee o borre la rama. Si no, el vigía volvería a ver la misma diferencia y repetiría la misión. |
 
-Horario: `15 0,14-23 * * *` UTC = de 09:15 a 19:15 hora local (UTC−5). Nada después de las 20:00.
+Horario (plan Hobby: un cron al día): `15 14 * * *` UTC = 09:15 hora local (UTC−5) arranca **una** sesión que hace una
+pasada por hora, con `sleep` durable entre pasadas, hasta las 19:15 (`proximaPasadaS` en `lib/modelo.ts`). Nada
+después de las 20:00. La sesión dura como máximo 11 h.
 
 ## Memoria: tres capas, cada cosa en su sitio
 
@@ -120,14 +122,17 @@ siendo propias. Conviene confirmar con el reto que un agente propio sobre un fra
    `curl -X POST localhost:2000/eve/v1/dev/schedules/vigia`.
 5. `pnpm exec eve deploy`: el schedule se convierte en un Vercel Cron.
 
-**Proyecto de Vercel propio, separado del reemplazo.** Si se usa la integración con Git, el proyecto del agente tiene
-*Root Directory* = `mision`. No se juntan en un proyecto con `services`:
-- el reemplazo debe conservar **todas** sus rutas iguales al original, y `/eve/*` publicaría eve donde el original da
-  404 E404;
-- un build de eve fallido no debe tumbar el servicio que se evalúa;
-- el agente no llama al reemplazo desplegado. Su `localhost:3111` es el candidato que construye **dentro del sandbox**
-  con el parche sin mergear. Un binding al reemplazo desplegado probaría el código equivocado y le mandaría `/__reset`
-  y cientos de requests al servicio que se evalúa. Por eso no hay bindings.
+**Desplegado en el mismo proyecto que el reemplazo** (`lab10-caja-negra`, `vercel.json` con `services`):
+`app` = reemplazo (raíz, todas las rutas) y `mision` = este agente, público solo en `/eve/*` (por ahí entra el cron;
+`/eve/v1/session` rechaza sin credencial y el cron exige la cabecera de Vercel). `/eve` a secas sigue dando 404 E404.
+Un build fallido no reemplaza producción: el último despliegue bueno sigue sirviendo.
+- **Sin bindings:** el agente no llama al reemplazo desplegado. Su `localhost:3111` es el candidato que construye
+  **dentro del sandbox** con el parche sin mergear; un binding probaría el código equivocado y le mandaría `/__reset`
+  y cientos de requests al servicio que se evalúa.
+- **Variables (Production):** `TEAM_TOKEN` (reemplazo); `OPENROUTER_API_KEY`, `CAJA_TOKEN` (o `CAJA_TOKEN_AGENTE`),
+  `GITHUB_TOKEN` y `EVE_MEMORY_BLOB_*` (agente). Todas en el mismo proyecto.
+- **Disparar el vigía a mano:** `vercel crons ls` para ver la ruta y `vercel crons run <ruta>`.
+- **Ver qué hizo:** `vercel agent-runs list --project lab10-caja-negra` y `vercel agent-runs trace <runId> ...`.
 
 ## Límites conocidos (y cómo subirlos)
 
