@@ -1,0 +1,4 @@
+{
+  "desde_id": 791,
+  "nota": "Primera fila de la version vigente del original (cambio entre 15:48 y 15:56: s-canario-1548 ids 770-790 igual a la manana, s-watch-1556 desde 791 distinto). replay.py omite las seqs que empiezan antes de este id y los ejemplos de la manana; tests/ejemplos.e2e.ts usa el ultimo s-canario-* de esta version. Ante un nuevo cambio de version, subir este id a la primera fila de la version nueva."
+}
