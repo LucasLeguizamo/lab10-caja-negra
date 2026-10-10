@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+.token.lock
+experimentos.jsonl
+material/
+spec/
+tools/
+.claude/
+.agents/
