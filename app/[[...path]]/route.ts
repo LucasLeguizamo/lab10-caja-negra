@@ -5,9 +5,14 @@ async function route(req: Request) {
   const { pathname } = new URL(req.url);
   const res = handle(req.method, pathname, req.headers.get("authorization"), await req.text());
   const isText = typeof res.body === "string";
-  return new Response(isText ? (res.body as string) : JSON.stringify(res.body), {
+  // HEAD: sin cuerpo (log id 93)
+  const body = req.method === "HEAD" ? null : isText ? (res.body as string) : JSON.stringify(res.body);
+  return new Response(body, {
     status: res.status,
-    headers: { "content-type": isText ? "text/plain; charset=utf-8" : "application/json; charset=utf-8" },
+    headers: {
+      "content-type": isText ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
+      ...res.headers,
+    },
   });
 }
 

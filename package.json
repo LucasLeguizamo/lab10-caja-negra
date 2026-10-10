@@ -2,9 +2,9 @@
   "name": "lab10-caja-negra",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mjs --dev",
     "build": "next build",
-    "start": "next start -p ${PORT:-3000}"
+    "start": "node server.mjs"
   },
   "dependencies": {
     "@gdp-ts/core": "^0.1.0",

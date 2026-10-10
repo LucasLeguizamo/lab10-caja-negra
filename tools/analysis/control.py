@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Campo de control de la caja negra: fórmula deducida de material/pruebas/ejemplos.jsonl.
 
-Confianza: PROBABLE (sale solo de los 20 ejemplos, no de nuestro log). Ningún request al original.
+Confianza: CONFIRMADO C2 (log#4-23 reproducen los 20 ejemplos; log#123-128 deciden C2 en los bordes). Ningún request al original.
 
 Fórmula (candidata C1, la que usamos):
 
@@ -55,14 +55,17 @@ def n_mod(payload: str) -> int:
     return h
 
 
-def control(payload: str) -> int:
-    """C1: (1 - 3N) mod 97, rango 0..96."""
+def control_c1(payload: str) -> int:
+    """C1 (REFUTADA por log#123-128): (1 - 3N) mod 97, rango 0..96. Solo para documentar."""
     return (1 - 3 * n_mod(payload)) % M
 
 
 def control_c2(payload: str) -> int:
-    """C2: 98 - (100N mod 97), rango 2..98. Igual a C1 salvo cuando 3N mod 97 in {0,1}."""
+    """C2 (CONFIRMADA, log#123-128): 98 - (100N mod 97), rango 2..98. Igual a C1 salvo cuando 3N mod 97 in {0,1}."""
     return 98 - (3 * n_mod(payload)) % M
+
+
+control = control_c2  # fórmula vigente; el servicio la exige como entero de 1-2 dígitos (log#111-121), salvo PING (log#47-62)
 
 
 def is_valid(payload: str, c: int) -> bool:

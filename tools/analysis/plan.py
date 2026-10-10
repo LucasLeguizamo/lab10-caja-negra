@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from control import control, msg, EJEMPLOS  # noqa: E402
+from control import control, control_c1, msg, EJEMPLOS  # noqa: E402
 import json  # noqa: E402
 
 A1, A2 = "AC-0001", "AC-0002"
@@ -39,7 +39,7 @@ def with_c(payload, c):  # control explícito
 def first_with(c0, tpl="CONSULTA;AC-{:04d}"):
     for i in range(10000):
         p = tpl.format(i)
-        if control(p) == c0:
+        if control_c1(p) == c0:  # Q1b ya ejecutada (log#122-128): solo reproducibilidad
             return p
     raise SystemExit("sin plantilla")
 

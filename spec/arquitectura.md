@@ -1,187 +1,223 @@
 # Arquitectura y modelo de la caja negra (system-designer)
 
-Estado: **tanda 1, sin token**. No se ha hecho ningún request al original. Todo lo de abajo sale de
-`material/pruebas/ejemplos.jsonl` (versión de la mañana) y de una línea de nuestro log.
+Estado: **tanda 2**, sobre `experimentos.jsonl` hasta el `id` 141 (otra sesión sigue sondeando; este documento no hace
+ningún request). Libro de preguntas: `spec/preguntas.md`.
 
 Convención de evidencia:
 
-- `ej#N` = línea `n=N` de `material/pruebas/ejemplos.jsonl`. **No es nuestro log**: todo lo que
-  solo tenga `ej#` es **probable** como máximo, y `spec-writer` no puede citarlo como evidencia
-  de la spec hasta que `recon-prober` lo reproduzca y quede un `id` de `experimentos.jsonl`.
-- `log#N` = `id` N de `experimentos.jsonl` (hoy solo existe `log#1`).
-- Confianza: **confirmado** (probado y repetido en nuestro log), **probable** (visto una vez o
-  inferido), **supuesto** (no observado; es lo que haría el reemplazo por defecto).
-- Reproducir cálculos: `python3 tools/analysis/control.py` (self-check, 18 controles válidos + los
-  2 inválidos de los ejemplos) y `python3 tools/analysis/plan.py list` (secuencias de la sección 3).
+- `log#N` = `id` N de `experimentos.jsonl`. **Es la única evidencia citable en la spec.**
+- `ej#N` = línea `n=N` de `material/pruebas/ejemplos.jsonl` (versión de la mañana, solo como segunda fuente).
+- Confianza: **confirmado** = observado en el log y coincide con otra grabación independiente (`ej#` o un segundo `id`);
+  **probable** = una sola observación o inferencia directa; **supuesto** = sin observar (lo que haría el reemplazo por defecto).
+- Cada bloque separa **Observado** (ids), **Inferido** (modelo) y **Desconocido**.
+- Cálculos reproducibles: `python3 tools/analysis/control.py` (self-check 18/18), `python3 tools/analysis/plan.py list`.
+  Desde esta tanda `control()` = C2 (la C1 queda como `control_c1`, refutada).
 
----
+## 0. Qué cambió respecto a la tanda 1 (contradicciones y confirmaciones)
+
+| # | Tanda 1 decía | El log dice | Evidencia |
+|---|---|---|---|
+| X1 | El control es C1 `(1-3N) mod 97` (rango 0..96) | **C2** `98 - (3N mod 97)` (rango 2..98). Con C1 habría aceptado `;0` y `;1`; el servicio los rechaza y acepta `;97` y `;98`. La congruencia mod 97 también queda refutada (`0` y `99` rechazados) | log#123-128 |
+| X2 | PING valida el control (`PING;65` -> E202 en el canario y en Q1a) | **PING no valida el control**: `00`, `63`, `65`, `99`, `XX`, `100`, `064`, `6`, `-1`, ` 64`, `64 ` dan pong | log#49-53, 55-62 |
+| X3 | Auth es la primera etapa (401 en todo) | **Ruta + método se resuelven antes que la auth**: lo desconocido da 404 E404 aunque no haya token o sea inválido. Solo las rutas que existen (`POST /msg`, `POST /__reset`, `GET /health`) piden token | log#69, 72-75, 77, 89-93, 103-106 vs 1, 37, 70, 71 |
+| X4 | Los E1xx eran "sin datos" | Existen **E100, E102, E103, E104, E404** (cuerpo, `m`, `;`, segmento vacío, ruta) y se evalúan antes que el control | log#33, 40-42, 54, 64-66, 87, 112, 29 |
+| X5 | E301 = `{"error","mensaje"}` | A veces lleva un **tercer campo `sugerencia`** (nombre del comando válido). Es un quirk nuevo | log#63, 78, 83, 84, 88 |
+| X6 | E201 = "el último campo no es un entero" | E201 = "el último campo no es 1-2 dígitos ASCII": `014`, `0014`, `111`, `+14`, ` 14`, `14 `, `14.0`, `-83`, `XX` son E201 | log#111, 114-121 |
+| X7 | Orden control/comando/aridad/entidad = hipótesis | **Confirmado** E201 -> E202 -> (E301 | E302 | E401): el control gana a los tres (pares con dos errores a la vez). E302 vs E401 sigue abierto | log#131-141, 123/125/128/136/137 |
+| X8 | "Token inválido = E001" supuesto | Confirmado para token ausente/vacío/inventado. **Pero** los ids 97, 98, 101, 102 mandaron `Basic`/`bearer` con un token **inválido**: no prueban que el esquema sea sensible a mayúsculas. Sigue abierto (Q3b) | log#95-102 (`auth_sent`) |
+| X9 | Lectura de Q4b: "120000 rechazado => H1 o H2" | En una secuencia nueva no hay transferencia previa: bajo H2 (acumulado) 120000 **pasa**. Solo H1 la rechaza. La tabla corregida está en 1.5 y el experimento `e506-v2` en 3 | razonamiento sobre log#10, 12, 13 |
+| C1 | 20 ejemplos "probables" | Los 20 ejemplos se reproducen idénticos (status y cuerpo): todo lo de 1.4-1.6 que viene de ellos pasa a **confirmado** (si no se indica otra cosa) | log#4-23 |
 
 ## 1. Modelo del original
 
 ### 1.1 Integridad: el campo de control
 
-**Resultado: la fórmula explica los 20 ejemplos** (18 controles correctos, `ej#2` y `ej#17`
-inválidos por la razón correcta). Confianza: **probable** (20 puntos, ninguno en nuestro log).
+**Observado.**
 
-```
-payload = mensaje sin el último ';' ni lo que viene después     ("ALTA;Lucia;82" -> "ALTA;Lucia")
-N       = número decimal que resulta de concatenar, para cada carácter del payload en MAYÚSCULAS:
-            '0'..'9'  -> el propio dígito
-            'A'..'Z'  -> su posición en el alfabeto escrita en decimal (A=1 ... I=9, J=10 ... Z=26)
-            otro      -> nada (';' y '-' son los únicos vistos; el resto es hipótesis, Q8)
-control = (1 - 3*N) mod 97          [C1]       equivale a   (N*100 + control) mod 97 == 1
-```
+- `control = 98 - (3N mod 97)`, con `N` el número decimal formado por el payload en mayúsculas (`0-9` -> dígito, `A-Z` ->
+  posición 1..26 en decimal; `;`, `-` y espacio no aportan). Equivale a ISO 7064 MOD 97-10 con A=1..Z=26. 18 controles válidos
+  de los ejemplos se reproducen en log#4-23; los bordes `3N mod 97 in {0,1}` deciden C2 en log#123-128 (payloads
+  `CONSULTA;AC-0038` -> 97, `CONSULTA;AC-0070` -> 98, `CONSULTA;AC-0005` -> 2; los controles 0, 1, 99 dan E202).
+- El payload es todo lo anterior al **último** `;`; el control es lo posterior (log#113: `CONSULTA;AC-0001` toma `AC-0001` como control -> E201).
+- Forma aceptada del control: dígitos ASCII, **1 o 2 caracteres**. Se acepta `3` (log#7). Dan E201: `XX`, `5X`, `014`, `0014`, `111`,
+  `+14`, ` 14`, `14 `, `14.0`, `-83` (log#20, 111, 114-121, 132, 135, 137). Con forma válida y valor distinto: E202 (log#5, 110, 123, 125, 128).
+- La comparación es **igualdad exacta** (no congruencia: `0` rechazado cuando C2=97, log#123; `99` cuando C2=2, log#128).
+- Mayúsculas/minúsculas no cambian el control (`CONSULTa`, log#14; `Lucia`, log#6) y los espacios no pesan:
+  ` ALTA;Lucia;82`, `ALTA ;Lucia;82`, ` PING;64` pasan el control y caen en E301 (log#63, 83, 84, 88).
+- **Excepción PING**: no se valida el control (log#49-53, 55-62). Sí se exige un segmento no vacío (`PING;` -> E104, log#54, 65) y `;` (`PING` -> E103, log#64);
+  y como máximo uno (`PING;64;64`, `PING;1;64` -> E302, log#67, 68).
+- Un comando desconocido **con control incorrecto** da E202, no E301 (`PIN;64`, `PINGG;64`, `PONG;64`, `ALTAS;Lucia;1`, `SALDO;AC-0001;1`, `FOO;54`, `SALDOS;AC-0001;45`:
+  log#79-82, 86, 131, 140); con el control correcto da E301 (log#15, 141).
 
-Es el checksum MOD 97-10 de IBAN (ISO 7064) con A=1..Z=26 en lugar de A=10..Z=35. Se calcula en una
-pasada sin enteros grandes: `h = (h * 10^largo(v) + v) mod 97` con `v` el valor del carácter.
+**Inferido.**
 
-Ejemplo `ej#1`: `PING` -> P=16 I=9 N=14 G=7 -> N=169147 -> 3N mod 97 = 34 -> 1-34 mod 97 = **64**. `ej#3`:
-`ALTA;Lucia` -> `1 12 20 1 12 21 3 9 1` -> 1122011221391 -> **82**.
+- Regex tipo `^\d{1,2}$` ASCII, o `^(\d|[1-9]\d)$`. Los ids 114/115 (`014`, `0014`) tienen 3 y 4 caracteres, así que **no distinguen** "largo" de "cero a la izquierda": hace falta `05`.
+- La exención de PING es por nombre (`PING` en mayúsculas tras `toUpperCase`; ` PING` no se exime porque cae en E301 con el control ya validado: log#63).
+- El motor es JS/Python/otro: no se sabe. `int()` de Python quedaría descartado (aceptaría `+14` y ` 14`, log#116, 117).
 
-| Evidencia | Qué prueba |
-|---|---|
-| `ej#1,3,4,5,6,7,8,10,11,13,14,18,19` (éxitos 200/201) | el control del mensaje coincide con C1 (13 coincidencias; azar ≈ 97^-13) |
-| `ej#9,12,15,16,20` (errores de 4xx *distintos* de E2xx) | llevan un control correcto: estos errores ocurren **después** de pasar el control, o el control se evalúa y no importa; el orden exacto **no** está probado (ver 1.2) |
-| `ej#2` `ALTA;Lucia;83` -> 400 E202 | 83 es un entero bien formado pero C1 da 82: **comparación exacta**, no "cualquier número" |
-| `ej#17` `...;700;5X` -> 400 E201 | "5X" no es un entero; su control correcto sería 35 (`ej#18`) |
-| `ej#4` `ALTA;Mateo;3` | el control **no se rellena a 2 dígitos** ("3", no "03") |
-| `ej#11` `CONSULTa` = control 14 de `CONSULTA` (`ej#5`) | mayúsculas/minúsculas no cambian el control (se pasa a mayúsculas, o los pesos son iguales) |
-| `ej#3` `Lucia` en minúscula pesa como `LUCIA` | idem para los argumentos |
+**Desconocido.**
 
-**Candidatas que los ejemplos no distinguen** (hay que desempatarlas; los experimentos están en Q1):
-
-| ID | Candidata | Difiere de C1 en | Experimento que desempata |
-|---|---|---|---|
-| C1 | `(1-3N) mod 97`, rango 0..96, igualdad estricta | (base) | Q1b |
-| C2 | `98 - (100N mod 97)`, rango 2..98 (forma ISO 7064 "pura") | solo si `3N mod 97` in {0,1}: C1 da 1 o 0, C2 da 98 o 97 | Q1b: `CONSULTA;AC-0070;1`/`98` y `CONSULTA;AC-0038;0`/`97` |
-| C3 | validación por congruencia: `(100N + c) mod 97 == 1` (acepta `c` y `c+97`) | acepta controles de 3 cifras y `c+97` | Q1a `PING;161`, Q1b `...;97`, `...;98`, `...;99` |
-| C4 | límite de longitud del campo (máx. 2 cifras) -> E201 en `PING;161`/`PING;064` | solo forma | Q1a |
-| W1 | el servicio pondera/ignora otros caracteres (espacio, `.`, `_`, acentos) | solo con esos caracteres | Q8a/Q8b |
-
-Descartadas por los ejemplos (el self-check lo comprueba): suma de bytes mod 97/100, ASCII decimal
-concatenado, acumulado `h*10+v` sin desplazar por ancho de `v`, CRC32/Adler/MD5 mod M, hashes
-polinomiales de base B mod 97 con pesos afines, y pesos por posición. La pista que lo resolvió: pasar
-`'1'` -> `'2'` al final de `CONSULTA;AC-000x` baja el control en 3 (14 -> 11) y `'1'` -> `'9'` lo sube 73,
-que solo cuadra módulo 97 con peso 3 por unidad = `100 mod 97`; entre `100000` y `120000` (`ej#10`,
-`ej#9`) el dígito de las decenas de millar pesa 10^4 mod 97: los dígitos forman un número **decimal**.
+- Caracteres no `[A-Z0-9 ;-]` (`. , + _ / # ñ é €`): Q8a. Esto condiciona los montos `10.5`, `1,000`, `+100` y los nombres con acento.
+- `05`/`00`, dígitos unicode, `14\n` (Q1a). Si la exención de PING cubre otros comandos sin argumentos (Q9a).
 
 ### 1.2 Pipeline de evaluación y precedencia de errores
 
-El orden de abajo es la **mejor hipótesis**, ordenada por la numeración de los códigos (E0xx auth,
-E2xx control, E3xx comando, E4xx entidad, E5xx negocio). Ningún ejemplo prueba el orden *entre* etapas:
-en todos los errores de los ejemplos las demás etapas pasan limpias. Lo único observado es cada etapa
-sola. Confianza del **orden**: **supuesto**; de cada etapa individual: **probable**.
+Orden **observado** (cada fila tiene un par de errores simultáneos o un barrido que lo fija):
 
-| # | Etapa | Error | Status | Cuerpo exacto | Evidencia |
-|---|---|---|---|---|---|
-| 1 | Autenticación (Bearer) | E001 | 401 | `{"error":"E001","mensaje":"no autorizado"}` | `log#1` (solo `GET /health` sin token); resto supuesto |
-| 2 | Ruta/método/cuerpo JSON (`m` string) | ¿E1xx? | ? | ? | sin datos (Q3). Tampoco sabemos si existe E1xx |
-| 3 | Control **mal formado** (el último campo no es un entero) | E201 | 400 | `{"error":"E201","mensaje":"control mal formado"}` | `ej#17` |
-| 4 | Control **inválido** (entero distinto del calculado) | E202 | 400 | `{"error":"E202","mensaje":"control inválido"}` | `ej#2` |
-| 5 | Comando desconocido (insensible a mayúsculas) | E301 | 400 | `{"error":"E301","mensaje":"comando desconocido "}` (con **espacio final**) | `ej#12`, caso `ej#11` |
-| 6 | Aridad | E302 | 400 | `{"error":"E302","mensaje":"aridad inválida"}` | `ej#20` |
-| 7 | Entidad inexistente (cuenta) | E401 | 404 | `{"error":"E401","mensaje":"cuenta inexistente"}` | `ej#15` |
-| 8 | Reglas de negocio: límite | E506 | 422 | `{"error":"E506","mensaje":"límite excedido"}` | `ej#9` |
-| 8 | Reglas de negocio: saldo | E507 | 422 | `{"error":"E507","mensaje":"saldo insuficiente"}` | `ej#16` |
-| 9 | Ejecución (efecto en el estado) | - | 200/201 | ver 1.5 | |
+| # | Etapa | Error | Status | Cuerpo exacto | Evidencia | Confianza |
+|---|---|---|---|---|---|---|
+| 1 | Ruteo exacto: método + ruta, sensible a mayúsculas, sin normalizar `/` final | E404 | 404 | `{"error":"E404","mensaje":"ruta desconocida"}` (`HEAD`: cuerpo vacío) | log#29, 35, 44, 45 (con token); 69, 72-75, 77, 89-93 (sin token); 103-106 (token inválido) | confirmado |
+| 2 | Auth (solo rutas que existen) | E001 | 401 | `{"error":"E001","mensaje":"no autorizado"}` | log#1, 37, 38, 70, 71, 94-96, 99, 100; la auth va **antes** de parsear el cuerpo: log#94 | confirmado (esquema con token válido: ver 1.3) |
+| 3 | Cuerpo no JSON o vacío (`/msg`) | E100 | 400 | `{"error":"E100","mensaje":"json inválido"}` | log#33, 42 | confirmado |
+| 4 | JSON sin `m` o con `m` no string | E102 | 400 | `{"error":"E102","mensaje":"falta m"}` | log#40 (`{}`), 41 (`{"m":5}`) | confirmado |
+| 5 | Mensaje sin `;` | E103 | 400 | `{"error":"E103","mensaje":"falta control"}` | log#64 (solo con `PING`) | probable |
+| 6 | Segmento vacío (en cualquier posición probada: final, doble, inicial) | E104 | 400 | `{"error":"E104","mensaje":"segmento vacío"}` | log#54, 65, 66, 87, 112. Gana a E201 (112 vs 113), a E202 (87) y a E302 (66) | confirmado |
+| 7 | Control (salvo PING): forma | E201 | 400 | `{"error":"E201","mensaje":"control mal formado"}` | log#20, 111, 113-121, 132, 133, 135, 137 | confirmado |
+| 8 | Control: valor | E202 | 400 | `{"error":"E202","mensaje":"control inválido"}` | log#5, 110, 123, 125, 128, 131, 134, 136, 138, 140 | confirmado |
+| 9 | Comando desconocido (sin recortar, insensible a mayúsculas) | E301 | 400 | `{"error":"E301","mensaje":"comando desconocido "}` (espacio final) y a veces `,"sugerencia":"PING"` | log#15, 141; con sugerencia 63, 78, 83, 84, 88 | confirmado (sugerencia: regla desconocida) |
+| 10 | Aridad | E302 | 400 | `{"error":"E302","mensaje":"aridad inválida"}` | log#23, 67, 68, 139; después del control: 134 (E202, no E302), 139 | confirmado |
+| 11 | Entidad inexistente (cuenta) | E401 | 404 | `{"error":"E401","mensaje":"cuenta inexistente"}` | log#18, 124, 126, 127 (solo CONSULTA) | confirmado (solo CONSULTA) |
+| 12 | Reglas de negocio | E506 / E507 | 422 | `{"error":"E506","mensaje":"límite excedido"}` / `{"error":"E507","mensaje":"saldo insuficiente"}` | log#12 / log#19 | confirmado (solo casos de los ejemplos) |
+| 13 | Efecto en el estado | - | 200/201 | ver 1.6 | log#6-22 | confirmado |
 
-Lagunas visibles en la numeración (hipótesis de existencia, **a buscar**): E003/E002 (token inválido),
-E1xx (cuerpo), E203, E303, E402 (OP inexistente), **E501-E505** (cinco códigos de negocio por debajo de
-E506: monto inválido/cero/negativo, misma cuenta, cuenta duplicada, depósito...) y E508+. Q4c, Q5, Q6, Q7 los
-buscan. **Aridad vs control**: `ej#20` (`ALTA;Lucia;Gomez;11`) tiene control correcto (C1 = 11), así que
-no sabemos si E302 ocurre antes o después de E202; Q2 lo resuelve.
+Pares que fijan el orden (todos en el log):
 
-Precedencias a decidir con experimentos (cada uno rompe dos cosas a la vez): E201 vs E202 (trivial),
-control vs comando, control vs aridad, comando vs aridad, aridad vs E401, E401 vs E506/E507, E506 vs E507
-(Q2 y Q4c).
+- 404 antes que 401: log#103-106 (token inválido + ruta/método inexistente = 404).
+- 401 antes que E100: log#94.
+- E104 antes que E201/E202/E302: log#112 (`CONSULTA;AC-0001;`), log#87 (`;64`), log#66 (`PING;;`).
+- E201 antes que E202 y antes que E301, E302, E401: log#132 (`SALDOS;..;5X`), 135 (`ALTA;Lucia;Gomez;5X`), 137 (`CONSULTA;AC-0009;5X`).
+- E202 antes que E301, E302, E401: log#131, 134, 136; también 138 (`CONSULTA;18`: E202; `CONSULTA;11`: E302, log#139), 140/141.
+- E301 vs E302: no se pueden solapar (un comando desconocido no tiene aridad).
 
-### 1.3 Estado por token
+**Inferido.** E506/E507/E401 van después de la aridad (los E5xx necesitan cuentas válidas); E401 va antes de E50x (la cuenta debe existir para comparar saldo).
+
+**Desconocido (Q2).** E302 vs E401 (aridad incorrecta con cuenta inexistente); E401 vs E506 vs E507 en TRANSFER; E103 con comandos distintos de PING; E104 en segmento intermedio frente a un control inválido; dónde cae la validación del monto (¿E3xx, E5xx, antes o después de E401?); si existen E101, E105+, E203, E303, E402, E501-E505, E508+.
+
+### 1.3 Entrada: rutas, métodos, auth y cuerpo
 
 | ID | Comportamiento | Evidencia | Confianza |
 |---|---|---|---|
-| S1 | Estado aislado por token; `POST /__reset` lo devuelve a: sin cuentas, contador AC en 1, contador OP en 1 | `ej#3` (`AC-0001` tras reset), `ej#6` (`OP-0001`), `material/README.md` | probable |
-| S2 | Contador de cuentas `AC-0001`, `AC-0002`...: 4 dígitos con ceros; ALTA exitoso -> 201 `{"cuentaId":"AC-000n"}` | `ej#3,4` | probable |
-| S3 | **Un solo** contador de operaciones `OP-nnnn` compartido por DEPOSITO y TRANSFER (`OP-0001` depósito, `OP-0002` transferencia) | `ej#6,7` | probable |
-| S4 | ALTA con control inválido (E202) **no consume** AC: el siguiente ALTA válido recibe `AC-0001` | `ej#2,3` | probable |
-| S5 | E506 y E507 **no consumen** OP: `OP-0002` -> (E506) -> `OP-0003`; E507 + E201 + ANULA -> `OP-0004` | `ej#9,10,13,14,16,17,18` | probable |
-| S6 | ANULA exitosa y repetida **no consume** OP | `ej#13,14,18` | probable |
-| S7 | Saldo inicial de una cuenta nueva = 0 | `ej#5` | probable |
-| S8 | DEPOSITO suma al saldo; TRANSFER resta de origen y suma a destino (`250000 -> 210000 / 40000`) | `ej#6,7,8` | probable |
-| S9 | ANULA de una TRANSFER **revierte el destino**: tras `ANULA;OP-0003` (`ej#13`) la cuenta AC-0002 vuelve a 40000 (`E507` en `ej#16` con 50000 > 40000 y `40700` en `ej#19`; sin reversión tendría 140000/140700). **No observado**: que el origen recupere los 100000 (nadie consulta AC-0001 después) | `ej#10,13,16,19` | probable (destino) / supuesto (origen) |
-| S10 | Guardamos por operación: tipo, monto, origen, destino, `anulada` (necesario para "ya anulada") | `ej#13,14` | probable |
-| S11 | Qué consume cada fallo no listado (E401, E302, E301, E50x desconocidos) | - | supuesto: nada se consume; Q7 |
-| S12 | ¿ALTA guarda el nombre? ¿Duplicados? ¿Límites de nombre? ¿Tope de cuentas? | - | supuesto: nombre sin efecto visible, duplicados permitidos; Q7 |
-| S13 | Dependencia del tiempo (caducidad de token, ventana para anular, límites diarios) | - | supuesto: ninguna; Q12c |
+| R1 | `GET /health` con token válido: 200 `{"ok":true}`, sin `X-Req` | log#2, 27 | confirmado |
+| R2 | `POST /__reset` con token válido: 200 `{"ok":true}`, sin `X-Req` | log#3, 24, 47, 76, 107, 122, 129 | confirmado |
+| R3 | `POST /msg` con token válido: ver 1.2 | log#4-23 y siguientes | confirmado |
+| R4 | `GET /health` sin token: 401 E001. `POST /__reset` sin token: 401 E001. `POST /msg` sin token (cuerpo válido o no JSON): 401 E001 | log#1, 70, 71, 94 | confirmado |
+| R5 | Token inválido, `Bearer ` vacío: 401 E001, idéntico a sin token | log#38, 95, 96, 99, 100 | confirmado |
+| R6 | Rutas inexistentes (`/nada`, `/`, `/health/`, `/HEALTH`) con o sin token: 404 `{"error":"E404","mensaje":"ruta desconocida"}`. No hay normalización de `/` final ni de mayúsculas | log#29, 72-75, 77, 103-105 | confirmado |
+| R7 | Método incorrecto en ruta existente: 404 E404 (no 405). `GET /msg`, `PUT/DELETE/PATCH/OPTIONS /msg`, `POST /health`, `GET /__reset`. `HEAD /msg`: 404 con cuerpo vacío | log#35, 44, 45, 69, 89-93, 106 | confirmado |
+| R8 | Los 404 no cuentan en `X-Req` y no llevan el header | log#29, 35, 44, 45 | confirmado |
+| R9 | `X-Req`: contador por token de `POST /msg` autenticados (también los que fallan por E100/E102/E2xx); no se reinicia con `/__reset`; `/health`, `/__reset`, 404 y 401 no cuentan | log#24-46 (21..35) | confirmado |
+| R10 | Cuerpo: no JSON o vacío -> E100; JSON `{}` o `m` no string (número) -> E102 | log#33, 40-42 | confirmado |
+| R11 | Esquema Authorization con **token válido**: `bearer`, `BEARER`, doble espacio, espacio final, sin esquema, `Basic`. Los ids 97, 98, 101, 102 usaron token inválido y por tanto no prueban nada sobre el esquema | log#97, 98, 101, 102 | **supuesto** (el reemplazo: exactamente `Bearer <token>`) |
+| R12 | `[]`, `null`, JSON string, `{"m":null}`, `{"m":""}`, `{"m":[...]}`, clave `M`, claves extra, JSON + basura, `/msg/`, `/msg?x=1`, `HEAD`/`OPTIONS /health` con token, tamaño máximo | - | **supuesto** (E100 si no parsea, E102 si no hay `m` string, 404 para rutas no exactas) |
 
-### 1.4 Reglas de negocio visibles
+**Inferido.** Un router exacto `método + ruta` con 404 por defecto antes de cualquier middleware de auth; 404 y 401 no pasan por el contador de `X-Req`; el contador vive en el handler de `/msg` tras la auth.
 
-- **E506 "límite excedido"** (`ej#9`): `TRANSFER;AC-0001;AC-0002;120000` con saldo del origen 210000
-  (el saldo alcanzaba: no es E507). Pasan 40000 (`ej#7`) y 100000 (`ej#10`).
-  Tres hipótesis compatibles con los tres puntos (más una pregunta lateral, H4):
-  - **H1** tope por operación en `[100000, 119999]` (el valor exacto es desconocido);
-  - **H2** acumulado transferido en la sesión con tope en `[140000, 159999]`: 40000 + 120000 = 160000 rechaza,
-    40000 + 100000 = 140000 pasa;
-  - **H3** proporción del saldo: 100000/210000 = 47,6% pasa, 120000/210000 = 57,1% rechaza (tope ~50%);
-  - **H4** (pregunta lateral, no explica `ej#9`): ¿DEPOSITO tiene su propio tope E506? `ej#6` pasó con 250000,
-    así que si existe es > 250000.
-  Desempata Q4a/Q4b: con saldo 1.000.000, `TRANSFER 120000` sigue rechazado => H1 (o H2); aceptado => H3.
-  Cuatro transferencias de ~100000 seguidas (acumulado ~400000) matan H2 si pasan.
-- **E507 "saldo insuficiente"** (`ej#16`): TRANSFER 50000 con saldo del origen 40000. Si compara `monto > saldo`
-  o `>=` es desconocido (Q4c: transferir exactamente el saldo).
-- **ANULA** (`ej#13,14`): `ANULA;OP-0003` -> `200 {"ok":true,"anulada":"OP-0003"}`; repetida ->
-  `200 {"ok":false,"motivo":"ya anulada"}`. **Un fallo de negocio puede ser 200 con `ok:false`**, no solo
-  un E5xx. Qué pasa con OP inexistente/de depósito/si el destino ya gastó el dinero: Q6a/Q6b.
-- **E401** (`ej#15`): `CONSULTA` de cuenta inexistente 404. Para DEPOSITO/TRANSFER con cuenta inexistente:
-  supuesto E401 (Q4c, Q7).
+### 1.4 Estado por token
 
-### 1.5 Respuestas exactas por comando (camino feliz)
+| ID | Comportamiento | Evidencia | Confianza |
+|---|---|---|---|
+| S1 | `POST /__reset` devuelve el token a: sin cuentas, `AC` en 1, saldos y operaciones vacíos. **No** reinicia `X-Req`. | `AC-0001` en log#108, 130 tras haber creado AC-0001/0002 en log#6, 7; saldo 0 en log#109 tras 250000 en log#9; X-Req: log#24-25 | confirmado (AC y saldos); el contador OP tras reset: **no observado** (Q16) |
+| S2 | `ALTA` válido: 201 `{"cuentaId":"AC-000n"}`, `n` desde 1, 4 dígitos | log#6, 7, 108, 130 | confirmado |
+| S3 | **Un solo** contador `OP-nnnn` para DEPOSITO y TRANSFER | log#9, 10 (OP-0001, OP-0002), 13, 21 | confirmado |
+| S4 | ALTA con E202 **no consume** AC | log#5 -> 6 | confirmado |
+| S5 | No consumen `OP`: E506 (log#12 -> OP-0003 en 13), E301 (15), E401 (18), E507 (19), E201 (20), ANULA ok (16) y repetida (17): OP-0003 -> OP-0004 en 13 -> 21 | log#12-21 | confirmado |
+| S6 | Saldo inicial de una cuenta nueva = 0 | log#8 | confirmado |
+| S7 | DEPOSITO suma; TRANSFER resta del origen y suma al destino (250000 -> 210000/40000 y 100000 más: 110000/140000) | log#9-11, 13, 14 | confirmado |
+| S8 | ANULA de una TRANSFER **revierte el destino**: con 140000 en AC-0002 (log#13) y ANULA (log#16), `TRANSFER 50000` desde AC-0002 da E507 (log#19) y tras depositar 700 el saldo es 40700 (log#22) | log#13, 16, 19, 21, 22 | confirmado (destino) / **desconocido** (origen: no se consultó AC-0001 tras ANULA) |
+| S9 | Se guarda por operación: tipo, monto, origen, destino, anulada | log#16, 17 | probable |
+| S10 | Qué consumen E302, E104, E103, E100/E102 y E401 de ALTA/DEPOSITO/TRANSFER | - | supuesto: nada (Q7) |
+| S11 | ALTA: nombre sin efecto visible, duplicados permitidos, sin tope; nombre vacío; unicode | - | supuesto (Q7, Q14) |
+| S12 | Dependencia del tiempo (ventana de ANULA, caducidad, límites diarios) | - | supuesto: ninguna (Q12c) |
+| S13 | Aislamiento por token (un segundo token no ve la cuenta del primero) | enunciado del reto | supuesto (no probado con 2 tokens: Q16) |
 
-| Comando | Argumentos | Status | Cuerpo | Evidencia |
-|---|---|---|---|---|
-| `PING` | 0 | 200 | `{"pong":true}` | `ej#1` |
-| `ALTA` | `nombre` (1) | 201 | `{"cuentaId":"AC-0001"}` | `ej#3,4`; con 2 args -> E302 (`ej#20`) |
-| `CONSULTA` | `cuenta` (1) | 200 | `{"cuenta_id":"AC-0001","saldo":0}` | `ej#5,8,11,19` |
-| `DEPOSITO` | `cuenta;monto` (2) | 200 | `{"status":"recieved","operacionId":"OP-0001"}` | `ej#6,18` |
-| `TRANSFER` | `origen;destino;monto` (3) | 200 | `{"status":"recieved","operacionId":"OP-0002"}` | `ej#7,10` |
-| `ANULA` | `operacion` (1) | 200 | `{"ok":true,"anulada":"OP-0003"}` / `{"ok":false,"motivo":"ya anulada"}` | `ej#13,14` |
+### 1.5 Reglas de negocio
 
-Todo con confianza **probable** (una o dos observaciones, solo en ejemplos). La aridad "esperada" de
-la columna 2 sale de los mensajes de los ejemplos, no de errores E302 observados salvo ALTA (Q9b).
+**Observado.**
 
-### 1.6 Quirks que hay que reproducir (son requisitos, no bugs)
+- `TRANSFER;AC-0001;AC-0002;120000` con saldo del origen 210000 -> 422 E506 (log#12). 40000 y 100000 pasan (log#10, 13).
+  El saldo alcanzaba, así que E506 no es E507.
+- `TRANSFER;AC-0002;AC-0001;50000` con saldo del origen 40000 -> 422 E507 (log#19).
+- `ANULA;OP-0003` -> 200 `{"ok":true,"anulada":"OP-0003"}`; repetida -> 200 `{"ok":false,"motivo":"ya anulada"}` (log#16, 17).
+  Un fallo de negocio puede ser 200 con `ok:false`.
+- `CONSULTA` de cuenta inexistente -> 404 E401 (log#18).
+
+**Inferido: hipótesis de E506** (todas compatibles con log#10, 12, 13; H4 es pregunta lateral).
+
+| H | Regla | Predicción en `e506-v2` (fresco: AC-0001 = 1.000.006, AC-0002 = AC-0003 = 0) |
+|---|---|---|
+| H1 | tope por operación T en [100000, 119999] | A: `1->2 120000` **rechaza**; B, C rechazan |
+| H2 | tope del acumulado transferido en [140000, 159999] | A pasa; B (`1->3 120000`, acumulado 240000) rechaza; C rechaza |
+| H3 | proporción del saldo del origen (~50%: pasa 47,6%, rechaza 57,1%) | A, B, C pasan |
+| H5 | tope del saldo del **destino** tras la transferencia en [140000, 159999] | A pasa; B pasa (destino distinto); C (`1->2` otra vez, destino 240000) rechaza |
+| H6 | remanente mínimo en el origen en (90000, 110000] | A, B, C pasan (quedan 880006, 760006, 640006) |
+| H4 | DEPOSITO con su propio tope E506 (> 250000, log#9) | no se prueba aquí: Q4a |
+
+Distinciones: A rechaza => H1. A pasa y B rechaza => H2. A y B pasan y C rechaza => H5. Las tres pasan => H3/H6/tope mayor: seguir con `TRANSFER 500000`
+(50%) y con una transferencia que deje el origen por debajo de 90000.
+
+**Desconocido.** El valor exacto del tope; `monto > saldo` vs `>=` en E507; montos 0, negativos, decimales (E501-E505); transferencia a la misma cuenta;
+si ANULA devuelve el dinero al origen; ANULA de DEPOSITO, de OP inexistente o mal formada; si ANULA falla cuando el destino ya gastó el dinero.
+
+### 1.6 Respuestas por comando (camino feliz)
+
+| Comando | Argumentos (sin control) | Status | Cuerpo | Evidencia | Confianza |
+|---|---|---|---|---|---|
+| `PING` | 0 (el control no se valida) | 200 | `{"pong":true}` | log#4, 48-53, 55-62, 85 | confirmado |
+| `ALTA` | `nombre` (1) | 201 | `{"cuentaId":"AC-0001"}` | log#6, 7; con 2 args E302: log#23 | confirmado |
+| `CONSULTA` | `cuenta` (1) | 200 | `{"cuenta_id":"AC-0001","saldo":0}` | log#8, 11, 14, 22; 0 args E302: log#139 | confirmado |
+| `DEPOSITO` | `cuenta;monto` (2) | 200 | `{"status":"recieved","operacionId":"OP-0001"}` | log#9, 21 | confirmado (aridad errónea: **no observada**) |
+| `TRANSFER` | `origen;destino;monto` (3) | 200 | `{"status":"recieved","operacionId":"OP-0002"}` | log#10, 13 | confirmado (aridad errónea: no observada) |
+| `ANULA` | `operacion` (1) | 200 | `{"ok":true,"anulada":"OP-0003"}` / `{"ok":false,"motivo":"ya anulada"}` | log#16, 17 | confirmado (aridad errónea y errores: no observados) |
+
+### 1.7 Quirks que hay que reproducir (son requisitos, no bugs)
 
 | ID | Quirk | Evidencia | Confianza |
 |---|---|---|---|
-| Q-01 | `"status":"recieved"` (typo) en DEPOSITO y TRANSFER | `ej#6,7,10,18` | probable |
-| Q-02 | `E301` lleva **espacio final** en `mensaje`: `"comando desconocido "` | `ej#12` | probable (¿cola vacía de una plantilla?: Q9a) |
-| Q-03 | Claves inconsistentes: `cuentaId` en ALTA vs `cuenta_id` en CONSULTA | `ej#3,5` | probable |
-| Q-04 | Comando insensible a mayúsculas (`CONSULTa`) | `ej#11` | probable |
-| Q-05 | Control sin ceros a la izquierda en la salida del cliente (`3`), y letras en minúscula pesan igual | `ej#4,3` | probable |
-| Q-06 | `ANULA` repetida es 200 con `ok:false` (no un error HTTP) | `ej#14` | probable |
-| Q-07 | ALTA responde **201**; DEPOSITO/TRANSFER **200** aunque creen una operación | `ej#3,6` | probable |
-| Q-08 | E5xx en **422**, E401 en **404**, E2xx/E3xx en **400** | `ej#2,9,12,15,16,17,20` | probable |
-| Q-09 | Mensajes con acentos UTF-8 (`inválido`, `límite`) | `ej#2,9` | probable |
+| Q-01 | `"status":"recieved"` (typo) en DEPOSITO y TRANSFER | log#9, 10, 13, 21 | confirmado |
+| Q-02 | E301 con **espacio final**: `"comando desconocido "` | log#15, 141 | confirmado |
+| Q-03 | Claves inconsistentes: `cuentaId` (ALTA) vs `cuenta_id` (CONSULTA); `operacionId`, `anulada`, `motivo` | log#6, 8, 9, 16, 17 | confirmado |
+| Q-04 | Comando insensible a mayúsculas (`CONSULTa`, `ping`, `pinG`); el nombre **no se recorta** (` PING` -> E301) | log#14, 59, 60, 85, 63, 88 | confirmado |
+| Q-05 | Control con 1 dígito sin cero a la izquierda (`3`); con cero a la izquierda y 3+ caracteres, E201 | log#7, 114, 115 | confirmado |
+| Q-06 | ANULA repetida = 200 `ok:false` | log#17 | confirmado |
+| Q-07 | ALTA 201; DEPOSITO/TRANSFER 200 aunque creen operación | log#6, 9 | confirmado |
+| Q-08 | E5xx -> 422, E401/E404 -> 404, E001 -> 401, E1xx/E2xx/E3xx -> 400 | log#12, 18, 29, 1, 5, 15, 20, 23, 33 | confirmado |
+| Q-09 | Mensajes con tildes UTF-8 (`inválido`, `límite`, `vacío`) | log#5, 12, 54 | confirmado |
+| Q-10 | E301 con `sugerencia` solo en nombres que difieren de uno válido en espacios (regla exacta: Q9c) | log#63, 78, 83, 84, 88 vs 15, 141 | probable |
+| Q-11 | PING ignora el control, pero exige segmento no vacío y a lo sumo uno | log#49-68 | confirmado |
+| Q-12 | `X-Req` en cada respuesta de `/msg` autenticada; ausente en `/health`, `/__reset`, 404, 401 | log#24-46 | confirmado (header; no se compara) |
 
-### 1.7 Rutas, métodos y auth fuera de `/msg`
-
-- Observado: `GET /health` **sin token** -> 401 E001 `{"error":"E001","mensaje":"no autorizado"}` (`log#1`, una
-  vez). Es decir, `/health` **exige** token (la auth se evalúa al menos antes de esa ruta). Confianza: **probable** (una
-  observación; no sabemos si vale para rutas inexistentes: Q3).
-- Del contrato (`material/README.md`): `POST /msg`, `POST /__reset`, `GET /health`. Cuerpo de `/__reset` y de
-  `/health` con token, token inválido (¿mismo E001?), rutas desconocidas, métodos incorrectos, cuerpos rotos:
-  **sin datos** (Q3). Defecto del reemplazo = **supuesto**.
-- `X-Req` (cabecera de respuesta registrada como `x_req` por `probe.py`): semántica desconocida (Q13).
-  Los headers no se comparan en el set, así que solo importa si delata versión/estado.
+**Sugerencia: Observado / Inferido / Desconocido.** Observado: aparece con `" PING"`, `"PING "`, `" ALTA"`, `"ALTA "` (valor = comando válido en mayúsculas) y no con `SALDOS`, `FOO`.
+Inferido (una de dos): (S-A) `sugerencia = cmd.trim().toUpperCase()` si pertenece al conjunto conocido; (S-B) comando conocido a distancia de edición pequeña
+(1 o 2). Desconocido: cuál; formato con minúsculas (` pinG`); qué hace con dos candidatos. Los E202 de log#79-82 (`PIN`, `PINGG`, `PONG`, `ALTAS`) **no** deciden:
+el control era incorrecto. Experimento `sug-2`.
 
 ### 1.8 Versiones durante el día
 
-`ejemplos.jsonl` es la versión de la mañana; el set cuenta la versión de las 20:00. Detección: **canario** Q12 =
-los 20 ejemplos + 4 bordes, ejecutado ahora (línea base) y cada hora; cualquier diferencia de status/cuerpo
-contra la corrida anterior abre una investigación. Coste: 25 requests/ejecución ≈ 325 requests/día de 8.000.
-Hipótesis de qué puede cambiar (todas **supuestos**): fórmula de control, mensajes de error, límite E506,
-comandos nuevos, status codes, nuevos quirks. Cada experimento de la sección 3 debe repetirse tras un cambio.
+**Observado.** log#4-23 reproduce los 20 ejemplos con 0 diferencias (línea base de la tanda 1). El log no guarda la hora del request: no se puede fechar el canario
+ni el momento de un posible cambio. La hora se infiere hoy solo por el orden de ids.
 
----
+**Hipótesis** (supuestos): cambia la fórmula del control, los mensajes, el tope E506, aparecen comandos o campos (`sugerencia` podría ser uno de los cambios del día, pero no hay forma de saberlo: no sabemos si estaba en la mañana;
+`ej#12` no lo tiene porque `SALDOS` tampoco lo tendría).
+
+**Detección.** Canario v2 = los 20 ejemplos + 12 puntos nuevos que cubren las reglas descubiertas hoy; ejecutarlo ahora (línea base) y cada hora; diferencias = candidatas, no causa.
+Añadir a `tools/probe.py` un campo `ts` (hora UTC) por línea. Los 12 puntos extra (mensajes con control C2):
+
+```
+PING;65            -> pong                      (PING exento, log#51)
+PING               -> E103
+PING;              -> E104
+ PING;64           -> E301 con sugerencia PING  (log#63)
+FOO;47             -> E301 sin sugerencia       (log#141)
+CONSULTA;11        -> E302                      (log#139)
+CONSULTA;AC-0038;0 -> E202                      (log#123)
+CONSULTA;AC-0038;97-> E401                      (log#124)
+CONSULTA;AC-0001;14 (tras ALTA;Lucia;82)         -> saldo 0
+CONSULTA;AC-0001;014 -> E201                    (log#114)
+ALTA;Lucia;Gomez;18 -> E202                     (log#134)
++ raw: GET /nada -> 404 E404; POST /msg {} -> E102
+```
+
+Cada experimento de la sección 3 se repite tras un cambio. Si el canario cambia, parar y bisectar con los ids viejos.
 
 ## 2. Arquitectura del reemplazo
 
@@ -189,568 +225,167 @@ Lo más simple que reproduce el modelo. Sin base de datos, sin LLM, sin infraest
 
 | Decisión | Elección | Por qué |
 |---|---|---|
-| Entrada | `app/[[...path]]/route.ts` (ya existe) exporta GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS y delega en `handle(method, path, auth, raw)` | Next no decide nada por su cuenta: `skipTrailingSlashRedirect`, sin 404 propio; cualquier ruta/método llega a `lib/service.ts` |
-| Lógica | `lib/service.ts`: función **pura y síncrona** `handle(...) -> {status, body}` (`body` string => se envía como texto plano) | un handler sin `await` entre leer y escribir el estado elimina carreras; <1 ms por paso, muy por debajo de 5 s |
-| Estado | `globalThis.__caja ??= new Map<token, Store>()` con `Store = {cuentas: Map<id,{nombre,saldo}>, ops: Map<id,{tipo,monto,origen,destino,anulada}>, siguienteAC, siguienteOP, ...}` | un solo proceso de larga vida; `globalThis` evita perder el estado por recargas de módulo en `next dev`. Sin DB (no hay evidencia de persistencia entre reinicios) |
-| Reset | `POST /__reset` con token válido crea un `Store` nuevo | `ej#3`: AC-0001 tras reset; el set llama reset antes de cada test |
-| Auth | solo `TEAM_TOKEN` (env). Otro token o ninguno => 401 E001 (`log#1`) | contrato del material; el cuerpo para token *inválido* es supuesto hasta Q3 |
-| Runtime | `export const runtime = "nodejs"`, `dynamic = "force-dynamic"`; **no** edge/serverless | el edge/serverless reparte en instancias con estado distinto |
-| Despliegue | Railway (o Render de pago / Fly con 1 máquina): `pnpm build && pnpm start`, **1 réplica**, sin autoscaling, sin sleep/scale-to-zero | el set le habla a un solo proceso; una cold start >5 s rompería un paso. Fijar `PORT` |
-| Verificación | `tools/replay.py` (parity-verifier) contra `localhost:3000` reproduciendo los 20 ejemplos y, después, cada secuencia de la sección 3 con su resultado real | |
+| Entrada | `app/[[...path]]/route.ts` exporta GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS y delega en `handle(method, pathname, authHeader, rawBody)` | Next no decide nada por su cuenta: sin redirects de `/` final, sin 404 propio, ni 405. `HEAD /msg` -> 404 con cuerpo vacío (log#93) |
+| Lógica | `lib/service.ts`: función **pura y síncrona** `handle() -> {status, body, headers}` | sin `await` entre leer y mutar el estado: sin carreras; <1 ms por paso |
+| Estado | `globalThis.__caja ??= new Map<token, Store>()`; `Store = {cuentas, ops, siguienteAC, siguienteOP, xreq}` | un proceso; `globalThis` por las recargas de `next dev`. `xreq` **no** se reinicia con `/__reset` (log#24-25) |
+| Reset | `POST /__reset` con token válido: `{ok:true}`; crea cuentas/ops/contadores nuevos, conserva `xreq` | log#3, 108, 109, 130 |
+| Runtime | `nodejs`, `force-dynamic`; **no** edge/serverless | edge/serverless reparte en instancias con estado distinto |
+| Despliegue | Railway/Render/Fly con 1 instancia, `pnpm build && pnpm start`, sin scale-to-zero, `PORT` fijo | el set le habla a un solo proceso; arranque en frío > 5 s rompe un paso |
+| Verificación | `tools/replay.py` con los 20 ejemplos, el canario v2 y cada secuencia de la sección 3 con su resultado real | |
 
-### Estructura interna de `handle()` (orden = hipótesis de 1.2; reordenar si Q2 lo contradice)
+### Estructura interna de `handle()` (orden observado en 1.2)
 
-1. `auth`: `Authorization === "Bearer " + TEAM_TOKEN` o 401 E001.
-2. Enrutado: `/health`, `/__reset`, `/msg`; el resto = respuesta de "ruta desconocida" (supuesto hasta Q3).
-3. Cuerpo: JSON con `m` string (si no, el error que descubra Q3).
-4. `payload, ctrl = m.rpartition(';')`; `ctrl` debe ser un entero (`E201` si no); comparar con `control(payload)` (`E202`).
-   `control` = C1 de 1.1 en una pasada con `h = (h * 10^largo(v) + v) mod 97`, `v` = dígito o posición del alfabeto,
-   tras `toUpperCase()`; el resto de caracteres no suma. La forma exacta de "entero" (ceros, `+`, espacios,
-   `c+97`) y C1 vs C2 en los bordes: Q1a/Q1b.
-5. `campos = payload.split(';')`; `cmd = campos[0].toUpperCase()` (E301 si no es uno de los 6; `mensaje` con espacio final);
-   aridad por comando (E302).
-6. Ejecutar el comando con sus reglas (E401, E506/E507...) y mutar el estado **solo si todo pasa** (los fallos no
-   consumen contadores: S4, S5).
-7. JSON con las claves tal cual (`cuentaId`, `cuenta_id`, `recieved`), `mensaje` con acentos y el espacio final de E301.
+1. Router exacto: `POST /msg`, `POST /__reset`, `GET /health`; cualquier otra cosa (método + ruta, sensible a mayúsculas, `/` final cuenta) -> **404** `{"error":"E404","mensaje":"ruta desconocida"}` (HEAD: cuerpo vacío).
+2. Auth: `Authorization === "Bearer " + TEAM_TOKEN` (supuesto para variantes de esquema: R11) o 401 E001 (cualquier ruta que existe, antes del cuerpo).
+3. `/health` -> 200 `{"ok":true}`; `/__reset` -> reset + 200 `{"ok":true}` (ninguno cuenta en `X-Req`).
+4. `/msg`: incrementar `xreq` (cuenta desde este punto, también los errores siguientes); `JSON.parse` (E100); `m` string (E102).
+5. `m` sin `;` -> E103. Dividir por `;`; cualquier segmento vacío -> E104.
+6. Si `campos[0].toUpperCase() !== "PING"`: control = último segmento; forma `^\d{1,2}$` (E201); valor `=== control_c2(payload)` (E202). `payload` = todo antes del último `;`.
+7. Comando en `{PING, ALTA, CONSULTA, DEPOSITO, TRANSFER, ANULA}` tras `toUpperCase()` sin recortar, si no E301 (`mensaje` con espacio final; `sugerencia` con la regla S-A hasta resolver Q9c).
+8. Aridad por comando (PING: 1 segmento tras el nombre, o E302; ALTA 1 arg; CONSULTA 1; DEPOSITO 2; TRANSFER 3; ANULA 1) -> E302.
+9. Ejecución: E401 (cuenta inexistente), reglas de negocio (E506/E507; **provisional**: tope por operación H1 hasta resolver Q4b), mutación solo si todo pasa. Fallos no consumen contadores (S4, S5).
+10. JSON con las claves tal cual (`cuentaId`, `cuenta_id`, `recieved`), `mensaje` con tildes.
 
-Portar la fórmula a TypeScript con **los mismos 20 casos** (`ejemplos.jsonl`) como test, más los bordes de Q1b
-(`CONSULTA;AC-0038;0`, `CONSULTA;AC-0070;1`).
+Pruebas locales: los 20 ejemplos, los 12 puntos del canario v2 y los bordes de control (`CONSULTA;AC-0038;97` aceptado, `;0` rechazado).
 
-Riesgos de arquitectura: reinicio del proceso en medio del set (estado perdido; no mitigable sin DB, pero
-`/__reset` precede cada test); latencia de arranque; rate-limit de la plataforma; HEAD/OPTIONS que Next responde
-solo si no se exportan (ya exportados). Si alguna vez hay evidencia de persistencia (estado que sobrevive a
-`/__reset`), reabrir la decisión de no usar DB.
+Riesgos de arquitectura: reinicio del proceso (estado perdido; el set llama a `/__reset` antes de cada test); arranque en frío; rate limit de la plataforma. Si hubiera evidencia de persistencia
+más allá de `/__reset`, reabrir la decisión de no usar DB (hoy no la hay).
 
----
+## 3. Próximos experimentos priorizados
 
-## 3. Preguntas abiertas priorizadas (plan de recon-prober)
+Reglas: un token por explorador (`CAJA_TOKEN`), todo por `tools/probe.py`, `concluir` solo con lo que prueba esa línea. Presupuesto: ~12% de los 8.000/día para todo esto
+(≈ 1.000 requests incluidos 10 canarios v2); el cuello es el ritmo (10 req/s) y no el cupo, así que el resto del cupo es para el fuzzer.
+Si aparece E202 donde la lista no lo espera, parar: Q8 (carácter con peso) o error de fórmula.
 
-Convenciones: cada bloque es una secuencia para `python3 tools/probe.py seq <nombre> "<hipótesis>" <m1> <m2> ...`
-(hace `/__reset` antes; **un token por explorador**) o, en Q3, una lista de `probe.py raw`. Los mensajes llevan el
-control **calculado por C1** (`tools/analysis/control.py`); `python3 tools/analysis/plan.py probe Qx` imprime el
-comando exacto. **Si aparece E202 donde el plan no lo espera, la fórmula (C1) o el mapeo de caracteres (Q8) está
-mal: detener la tanda, concluir en el log y consultar a system-designer.** Presupuesto: ~290 mensajes en total (incluida una ejecución del canario; cada `seq` suma un `/__reset`) + 25 por
-canario (8.000/día/token). Después de cada tanda, `probe.py concluir <id> "<texto>"` solo con lo que esa línea prueba.
+### P0: reglas que comparten muchos tests
 
-Orden recomendado: Q12 (línea base) -> Q1a -> Q1b -> Q2 -> Q3 -> Q8a -> Q9b -> Q10 -> Q5 -> Q4a/b/c -> Q6a/b -> Q7 -> Q9a -> Q11 -> Q13 -> Q12c -> Q14.
-
-### P0: gobierna casi todos los tests (40 son de un solo request)
-
-#### Q1a - Forma del campo de control (E201 vs E202 vs aceptado)
-
-- **Hipótesis**: (a) el control es "cualquier cadena de dígitos" (`064`, `+64`, `64.0` y `161` pasan/fallan distinto), (b) PING no valida
-  el control (`PING;65` -> pong), (c) falta de `;` / control vacío -> E201 o E302 o E1xx.
-- **Predicciones C1 estricto + regex `^\d+$`**: `PING;64` pong; `PING;65` E202; `PING;XX`, `PING;`, `PING;64.0`, `PING;+64`, `PING;-33`,
-  `PING; 64`, `PING;64 ` E201; `PING;064` y `PING;0064` pong (si parsea con `int`) o E201 / E202 (si no); `PING;161` E202 (estricto)
-  o pong (congruencia); `PING` (sin `;`), `;64`, `64`: ?
-- **Afecta al reemplazo**: parser de control (C3/C4), qué es E201.
+#### E1. `e506-v2` — naturaleza de E506 (13 requests; separa H1/H2/H3/H5/H6; bisección adaptativa después)
 
 ```
-PING;64
-PING;65
-PING;XX
-PING;
-PING
-PING;064
-PING;0064
-PING;+64
-PING; 64
-PING;64 
-PING;161
-PING;-33
-PING;64.0
-PING;64;
-;64
-64
+python3 tools/probe.py seq e506-v2 'Q4b: 120000 desde saldo 1.000.006 en estado fresco (H1 rechaza; H2/H3/H5/H6 pasan); B a destino nuevo (H2 rechaza); C al mismo destino (H5 rechaza)' \
+  'ALTA;Lucia;82' 'ALTA;Mateo;3' 'ALTA;Ana;50' \
+  'DEPOSITO;AC-0001;250000;86' 'DEPOSITO;AC-0001;250001;83' 'DEPOSITO;AC-0001;250002;80' 'DEPOSITO;AC-0001;250003;77' \
+  'TRANSFER;AC-0001;AC-0002;120000;55' 'TRANSFER;AC-0001;AC-0003;120000;71' 'TRANSFER;AC-0001;AC-0002;120000;55' \
+  'CONSULTA;AC-0001;14' 'CONSULTA;AC-0002;11' 'CONSULTA;AC-0003;8'
 ```
 
-`python3 tools/analysis/plan.py probe Q1a` -> secuencia `q1a-control-forma`.
+- Si A (primer TRANSFER) da E506: H1. Bisección dentro de [100000, 119999] con `TRANSFER;AC-0001;AC-0002;<n>` (los fallos no consumen OP ni saldo, S5): ~14 requests.
+  El tope exacto y si es `>` o `>=`. Un `100000` pasa seguro (log#13); empezar por 110000.
+- Si pasan A y B y rechaza C: H5 (tope del saldo del destino). Bisecar el saldo máximo del destino.
+- Si pasan las tres: H3/H6/tope mayor. Siguientes: `TRANSFER 500000` con saldo 1.000.006; `TRANSFER` que deje el origen en 95000 y en 105000.
+- Después, `q4a-deposito-limite` (DEPOSITO 1M/10M/100M: `python3 tools/analysis/plan.py probe Q4a`).
 
-#### Q1b - C1 vs C2 vs congruencia en los bordes (el desempate de la fórmula)
-
-- Los payloads cuyo C1 vale 0, 1, 2 son `CONSULTA;AC-0038`, `CONSULTA;AC-0070`, `CONSULTA;AC-0005`; son cuentas que no existen, así que un control
-  aceptado da **404 E401** y uno rechazado **400 E202**.
-- **C1 estricto**: `;0`, `;1`, `;2` -> E401; `;97`, `;98`, `;99` -> E202.
-  **C2**: `;97`, `;98` -> E401 y `;0`, `;1` -> E202; `;2` -> E401 y `;99` -> E202 (igual que C1 en este payload).
-  **C3 (congruencia)**: los seis -> E401.
+#### E2. `q8a` + `q5` — caracteres del control y gramática del monto (11 + 29 requests; destraba E501-E505)
 
 ```
-CONSULTA;AC-0038;0
-CONSULTA;AC-0038;97
-CONSULTA;AC-0070;1
-CONSULTA;AC-0070;98
-CONSULTA;AC-0005;2
-CONSULTA;AC-0005;99
+python3 tools/analysis/plan.py probe Q8a      # 11 requests; el espacio ya se sabe ignorado (log#83,84,88), A B queda de confirmación
+python3 tools/analysis/plan.py probe Q5       # 29 requests: 0, -5, 10.5, abc, "", 1e3, 0100, +100, " 100", "100 ", 1,000, 007, 2^53+1, 20 dígitos
 ```
 
-`python3 tools/analysis/plan.py probe Q1b` -> secuencia `q1b-control-borde`.
+Para cada E202 en Q5, barrer Q8b antes de deducir nada del monto. Qué se aprende: E50x/E3xx distintos, si `0100` se guarda como 100 (el `CONSULTA` tras cada depósito),
+si el monto es entero, y si hay tope de dígitos. Es el bloque con más tests potenciales (todo test de DEPOSITO/TRANSFER inválido).
 
-#### Q2 - Precedencia de la tubería (control / comando / aridad / entidad)
-
-- Cada mensaje rompe **dos** cosas. El primer error que aparezca dice quién va primero:
-  `SALDOS;AC-0001;<mal>`: E202 (control antes que comando) vs E301; `...;5X` ídem con E201; `ALTA;Lucia;Gomez;<mal>`: control vs aridad;
-  `CONSULTA;AC-0009;<mal>`: control vs entidad; `CONSULTA;<c>` y `FOO;<c>`: aridad/comando con control correcto;
-  `SALDOS;AC-0001` (sin control: el último campo hace de control): ¿E201?, ¿E301?
-- Con `ALTA;Lucia` al inicio para que AC-0001 exista.
+#### E3. `sug-2` — regla del campo `sugerencia` (13 requests)
 
 ```
-ALTA;Lucia;82
-SALDOS;AC-0001;45
-SALDOS;AC-0001;5X
-SALDOS;AC-0001
-ALTA;Lucia;Gomez;18
-ALTA;Lucia;Gomez;5X
-CONSULTA;AC-0009;94
-CONSULTA;AC-0009;5X
-CONSULTA;18
-CONSULTA;11
-FOO;54
-FOO;47
+python3 tools/probe.py seq sug-2 'E301: sugerencia ¿por espacios (S-A) o por distancia de edición (S-B)? controles C2 correctos, no habrá E202' \
+  'PIN;87' 'PINGG;28' 'PONG;98' 'ALTAS;2' 'DEPOSTIO;22' 'CONSULT;12' 'TRANSFERS;14' 'ANUL;93' \
+  ' pinG;64' ' FOO;47' $'\tPING;64' 'PING  ;64'
 ```
 
-`python3 tools/analysis/plan.py probe Q2` -> secuencia `q2-precedencia`.
+Predicciones: S-A -> solo ` pinG` (valor `PING` o `pinG`: formato), `\tPING` (¿tab cuenta como espacio?) y `PING  ` llevan sugerencia; S-B -> también `PIN`, `PINGG`, `ALTAS`, `CONSULT`, `ANUL`...
+Un E202 aquí delata un error de control (volver a verificar con `control.py msg`).
 
-#### Q3 - Entrada: rutas, métodos, cuerpo y auth
-
-- **Hipótesis**: sin token siempre E001 (también en `/nada`, `/msg`, `/__reset`); token inválido = mismo E001; cuerpo sin `m` -> error E1xx;
-  rutas desconocidas -> ¿404 JSON, 404 texto (Express "Cannot GET /nada"), o E-algo?; métodos incorrectos -> 404/405; `/__reset` -> 200 con
-  cuerpo ?, `/health` con token -> 200 ?. Si alguna respuesta no es JSON, **anotar el texto exacto** (se compara carácter por carácter).
-  Los status y cuerpos exactos van a la spec (sección Entrada). Ejecutar con `CAJA_TOKEN` válido; las líneas con `--no-auth`/`--token` prueban auth.
+#### E4. `q6a` + `q6b` — ANULA (14 + 12 requests)
 
 ```
-POST    /msg                                              # cuerpo vacío
-POST    /msg                   {                          # JSON roto
-POST    /msg                   []                         # array en vez de objeto
-POST    /msg                   {}                         # sin m
-POST    /msg                   {"m":5}                    # m no string
-POST    /msg                   {"m":null}                 # m null
-POST    /msg                   {"m":""}                   # m vacío
-POST    /msg                   {"M":"PING;64"}            # clave en mayúscula
-POST    /msg                   {"m":"PING;64","x":1}      # clave extra
-POST    /msg                   "PING;64"                  # string JSON
-POST    /msg                   m=PING;64                  # form
-GET     /msg                   (sin cuerpo)               # GET /msg
-PUT     /msg                   {"m":"PING;64"}            # PUT /msg
-OPTIONS /msg                   (sin cuerpo)               # OPTIONS /msg
-POST    /msg/                  {"m":"PING;64"}            # slash final
-POST    /MSG                   {"m":"PING;64"}            # mayúsculas en la ruta
-POST    /msg?x=1               {"m":"PING;64"}            # query string
-GET     /health                (sin cuerpo)               # con token
-POST    /health                (sin cuerpo)               # método incorrecto
-GET     /__reset               (sin cuerpo)               # GET en la ruta de reset
-POST    /__reset               (sin cuerpo)               # forma del cuerpo de /__reset
-GET     /                      (sin cuerpo)               # raíz con token
-GET     /nada                  (sin cuerpo)               # ruta inexistente con token
-POST    /nada                  {"m":"PING;64"}            # POST a ruta inexistente
-GET     /nada --no-auth        (sin cuerpo)               # ruta inexistente SIN token
-POST    /msg --no-auth         {"m":"PING;64"}            # /msg sin token
-POST    /__reset --no-auth     (sin cuerpo)               # reset sin token
-POST    /msg --token invalido  {"m":"PING;64"}            # token inválido (¿mismo E001?)
-GET     /health --token invalido (sin cuerpo)               # health con token inválido
+python3 tools/analysis/plan.py probe Q6a   # ANULA de DEPOSITO, OP-0099, OP-1, op-0001, AC-0001, sin arg, 2 args; saldo tras anular
+python3 tools/analysis/plan.py probe Q6b   # el origen recupera el dinero?, el destino ya gastó, orden de anulaciones
 ```
 
-`python3 tools/analysis/plan.py probe Q3` -> secuencia `q3-entrada`.
+Resuelve S8 (origen), los errores de ANULA (¿E402? ¿200 `ok:false` con otro `motivo`?) y la aridad de ANULA.
 
-### P1: reglas de negocio y gramática (las 45 secuencias de 2-5 pasos las usan)
-
-#### Q8a / Q8b - Qué hacen los caracteres no alfanuméricos en el control (prerrequisito de Q5)
-
-- **W0** (C1): se ignoran todos. Si `CONSULTA;A<x>B` da E401 => `x` se ignora; si da E202 => `x` pesa algo (p. ej. su código, o unicode raro).
-  Para cada `x` con E202, **barrer** Q8b: `CONSULTA;AxB;<c>` con `c` en 0..98, anotar el único `c` que da E401 y deducir
-  `3N mod 97` (=> valor de `x`).
-- Importa porque `-5`, `10.5`, `1,000`, `+100` y los nombres con espacio/acento dependen de esto.
+#### E5. `q4c` + `q9b` — entidad, precedencias de TRANSFER y aridad de todos los comandos (13 + 16 requests)
 
 ```
-CONSULTA;A B;92
-CONSULTA;A.B;92
-CONSULTA;A_B;92
-CONSULTA;A,B;92
-CONSULTA;A+B;92
-CONSULTA;A/B;92
-CONSULTA;A#B;92
-CONSULTA;AñB;92
-CONSULTA;AéB;92
-CONSULTA;A€B;92
-CONSULTA;AB;92
+python3 tools/analysis/plan.py probe Q4c   # E401 vs E506 vs E507; misma cuenta; monto 0; saldo exacto
+python3 tools/analysis/plan.py probe Q9b   # n-1 y n+1 argumentos de cada comando
 ```
 
-`python3 tools/analysis/plan.py probe Q8a` -> secuencia `q8a-caracteres-control`.
+Cierra Q2 (E302 vs E401; E401 vs E50x; E506 vs E507) y la aridad de DEPOSITO/TRANSFER/ANULA.
 
-#### Q9b - Aridad de cada comando
+### P1: entrada y control
 
-- Cada comando con n-1 y n+1 argumentos (con `AC-0001` de relleno): E302 vs otro código; ¿`PING;AC-0001` pasa? (hipótesis "PING ignora argumentos").
-  Fijar la tabla de aridades exactas.
+#### E6. `q3-resto` — cuerpos, rutas y E1xx faltantes (≈ 30 raw requests)
 
-```
-ALTA;Lucia;82
-PING;AC-0001;87
-PING;AC-0001;AC-0001;29
-ALTA;85
-ALTA;AC-0001;AC-0001;12
-CONSULTA;11
-CONSULTA;AC-0001;AC-0001;95
-DEPOSITO;25
-DEPOSITO;AC-0001;4
-DEPOSITO;AC-0001;AC-0001;AC-0001;36
-TRANSFER;89
-TRANSFER;AC-0001;83
-TRANSFER;AC-0001;AC-0001;18
-TRANSFER;AC-0001;AC-0001;AC-0001;AC-0001;57
-ANULA;45
-ANULA;AC-0001;AC-0001;49
-```
-
-`python3 tools/analysis/plan.py probe Q9b` -> secuencia `q9b-aridad`.
-
-#### Q10 - ¿Idempotencia? Mensajes idénticos repetidos
-
-- **Hipótesis**: (a) cada DEPOSITO crea una OP nueva (`OP-0001`, `OP-0002`, saldo 1400); (b) el servicio deduplica por mensaje (misma `OP-0001`, saldo 700).
+Probar con token válido (los de 29, 35, 44, 45 ya existen):
 
 ```
-ALTA;Lucia;82
-DEPOSITO;AC-0001;700;28
-DEPOSITO;AC-0001;700;28
-CONSULTA;AC-0001;14
-CONSULTA;AC-0001;14
+python3 tools/probe.py raw q3-body-array 'cuerpo [] (¿E101?)' POST /msg '[]'
+python3 tools/probe.py raw q3-body-null 'cuerpo null' POST /msg 'null'
+python3 tools/probe.py raw q3-body-num 'cuerpo 5' POST /msg '5'
+python3 tools/probe.py raw q3-body-str 'cuerpo string JSON' POST /msg '"PING;64"'
+python3 tools/probe.py raw q3-m-null '{"m":null}' POST /msg '{"m":null}'
+python3 tools/probe.py raw q3-m-empty '{"m":""}' POST /msg '{"m":""}'
+python3 tools/probe.py raw q3-m-array '{"m":["PING;64"]}' POST /msg '{"m":["PING;64"]}'
+python3 tools/probe.py raw q3-M-upper '{"M":..}' POST /msg '{"M":"PING;64"}'
+python3 tools/probe.py raw q3-extra-key 'clave extra' POST /msg '{"m":"PING;64","x":1}'
+python3 tools/probe.py raw q3-trailing-garbage 'JSON + basura' POST /msg '{"m":"PING;64"} x'
+python3 tools/probe.py raw q3-slash-msg 'POST /msg/ con token' POST /msg/ '{"m":"PING;64"}'
+python3 tools/probe.py raw q3-query-msg 'POST /msg?x=1 con token' POST '/msg?x=1' '{"m":"PING;64"}'
+python3 tools/probe.py raw q3-head-health 'HEAD /health con token' HEAD /health
+python3 tools/probe.py raw q3-options-health 'OPTIONS /health con token' OPTIONS /health
+python3 tools/probe.py raw q3-health-query 'GET /health?x=1 con token' GET '/health?x=1'
+python3 tools/probe.py raw q3-reset-body 'POST /__reset con cuerpo' POST /__reset '{"x":1}'
+python3 tools/probe.py raw q3-root-token 'GET / con token' GET /
+python3 tools/probe.py raw q3-m-5k 'm de 5000 caracteres (tamaño máximo)' POST /msg "{\"m\":\"PING;$(python3 -c 'print("9"*5000)')\"}"
+python3 tools/probe.py raw q3-m-50k 'm de 50000 caracteres' POST /msg "{\"m\":\"PING;$(python3 -c 'print("9"*50000)')\"}"
 ```
 
-`python3 tools/analysis/plan.py probe Q10` -> secuencia `q10-idempotencia`.
+(el log guarda el cuerpo entero; 50k es el máximo razonable). Pregunta que resuelve: dónde está E101 y si hay otros E1xx; qué cuenta en `X-Req`.
 
-#### Q5 - Gramática del monto
-
-- **Preguntas**: ¿qué es un monto válido? ¿cero, negativo, decimal, notación científica, ceros a la izquierda, signos, espacios,
-  separadores, desbordes? ¿qué E50x o E3xx devuelve cada uno? ¿`0100` se guarda como 100? (el `CONSULTA` tras cada depósito lo ve).
-  Hallar E501-E505. Un `E202` aquí significa que falló Q8 para ese carácter, no que el monto sea inválido.
+#### E7. `ctrl-2` — forma del control (6 requests)
 
 ```
-ALTA;Lucia;82
-DEPOSITO;AC-0001;0;31
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;-5;16
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;10.5;67
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;abc;13
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;;4
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;1e3;20
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;0100;19
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;+100;82
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001; 100;82
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;100 ;82
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;1,000;35
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;007;70
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;9007199254740993;88
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;99999999999999999999;4
-CONSULTA;AC-0001;14
+python3 tools/probe.py seq ctrl-2 'Q1a: 2 caracteres con cero a la izquierda (05, 00, 09) -> E202 si la forma pasa, E201 si no; dígitos unicode y salto de línea fingerprint del motor' \
+  'CONSULTA;AC-0001;05' 'CONSULTA;AC-0001;00' 'CONSULTA;AC-0001;09' 'CONSULTA;AC-0001;١٤' 'CONSULTA;AC-0001;１４' $'CONSULTA;AC-0001;14\n'
 ```
 
-`python3 tools/analysis/plan.py probe Q5` -> secuencia `q5-gramatica-monto`.
+Con `ALTA;Lucia` antes no hace falta: el control correcto de `CONSULTA;AC-0001` es 14, así que `05/00/09` son siempre incorrectos y la respuesta distingue la forma (E202 = forma ok).
 
-#### Q4a - ¿DEPOSITO tiene límite?
+#### E8. `auth-2` — esquema con token **válido** (6 raw requests)
 
-- 250000 pasa (`ej#6`). Probar 1.000.000, 10.000.000 y 100.000.000: ¿E506? ¿otro? El `CONSULTA` final dice cuáles se aplicaron.
-
-```
-ALTA;Lucia;82
-DEPOSITO;AC-0001;250000;86
-DEPOSITO;AC-0001;1000000;51
-DEPOSITO;AC-0001;10000000;16
-DEPOSITO;AC-0001;100000000;54
-CONSULTA;AC-0001;14
-```
-
-`python3 tools/analysis/plan.py probe Q4a` -> secuencia `q4a-deposito-limite`.
-
-#### Q4b - Naturaleza de E506 (H1 tope por operación / H2 acumulado / H3 proporción del saldo)
-
-- Saldo de AC-0001 = 1.000.006 (4 depósitos distintos), AC-0002 = 0.
-- `TRANSFER 120000` (saldo 1M): **rechazado => H1 o H2**; aceptado => H3 (o límite aún más alto).
-- `100001`, `110000`, `119999`: acotan el tope por operación en [100000, 119999] (H1). Las siguientes (100000, 99999, 99998, 99997) son
-  cuatro transferencias seguidas: el acumulado queda en ~400000 y **si todas pasan, H2 (tope acumulado ≤ 159999) queda refutada**.
-- Si H1: el tope exacto sale del primer `100001`..`119999` que falle (afinar con búsqueda binaria, ~5 requests más).
+`$TOK` = el token de la sesión (exportado como `CAJA_TOKEN`; el helper no lo imprime ni lo guarda aparte, queda solo en `auth_sent` del log: **revisar `.gitignore`/no publicar** ese campo
+antes de commitear `experimentos.jsonl`, que hoy es público).
 
 ```
-ALTA;Lucia;82
-ALTA;Mateo;3
-DEPOSITO;AC-0001;250000;86
-DEPOSITO;AC-0001;250001;83
-DEPOSITO;AC-0001;250002;80
-DEPOSITO;AC-0001;250003;77
-CONSULTA;AC-0001;14
-TRANSFER;AC-0001;AC-0002;120000;55
-TRANSFER;AC-0001;AC-0002;100001;9
-TRANSFER;AC-0001;AC-0002;110000;82
-TRANSFER;AC-0001;AC-0002;119999;58
-TRANSFER;AC-0001;AC-0002;100000;12
-TRANSFER;AC-0001;AC-0002;99999;24
-TRANSFER;AC-0001;AC-0002;99998;27
-TRANSFER;AC-0001;AC-0002;99997;30
-CONSULTA;AC-0001;14
-CONSULTA;AC-0002;11
+python3 tools/probe.py raw auth-2-lower 'esquema bearer con token válido' GET /health --auth-raw "bearer $CAJA_TOKEN"
+python3 tools/probe.py raw auth-2-upper 'esquema BEARER con token válido' GET /health --auth-raw "BEARER $CAJA_TOKEN"
+python3 tools/probe.py raw auth-2-dbl 'Bearer con dos espacios' GET /health --auth-raw "Bearer  $CAJA_TOKEN"
+python3 tools/probe.py raw auth-2-trail 'Bearer con espacio final' GET /health --auth-raw "Bearer $CAJA_TOKEN "
+python3 tools/probe.py raw auth-2-bare 'token sin esquema' GET /health --auth-raw "$CAJA_TOKEN"
+python3 tools/probe.py raw auth-2-basic 'Basic con token válido' GET /health --auth-raw "Basic $CAJA_TOKEN"
 ```
 
-`python3 tools/analysis/plan.py probe Q4b` -> secuencia `q4b-limite-transfer`.
-
-#### Q4c - Precedencia dentro de TRANSFER y casos borde
-
-- Con AC-0001 = 50000 y AC-0002 = 0: `500000` (límite + saldo): E506 vs E507 => **quién va primero**; destino inexistente + saldo / + límite =>
-  E401 vs E50x; origen inexistente; ambas; **misma cuenta** (¿E50x? ¿pasa y no cambia nada?); `0`; el saldo final dice qué se aplicó.
-- Falta (añadir tras ver los resultados): transferir exactamente el saldo (`50000`) => `>` vs `>=` en E507.
-
-```
-ALTA;Lucia;82
-ALTA;Mateo;3
-DEPOSITO;AC-0001;50000;39
-TRANSFER;AC-0001;AC-0002;500000;96
-TRANSFER;AC-0001;AC-0009;60000;82
-TRANSFER;AC-0001;AC-0009;500000;14
-TRANSFER;AC-0009;AC-0002;1000;25
-TRANSFER;AC-0009;AC-0008;1000;57
-TRANSFER;AC-0001;AC-0001;1000;64
-TRANSFER;AC-0001;AC-0001;60000;11
-TRANSFER;AC-0001;AC-0002;0;44
-CONSULTA;AC-0001;14
-CONSULTA;AC-0002;11
-```
-
-`python3 tools/analysis/plan.py probe Q4c` -> secuencia `q4c-transfer-precedencia`.
-
-#### Q6a - ANULA de un DEPOSITO y errores de ANULA
-
-- ¿Revierte el depósito (saldo 0)? ¿OP inexistente (`OP-0099`), mal formada (`OP-1`, `op-0001`), de otro tipo (`AC-0001`), sin argumento, con 2
-  argumentos? ¿200 `ok:false` con otro `motivo`, o E4xx/E5xx? Tras anular, el saldo y que `DEPOSITO` siguiente dé `OP-0002`.
-
-```
-ALTA;Lucia;82
-DEPOSITO;AC-0001;1000;35
-ANULA;OP-0001;72
-CONSULTA;AC-0001;14
-ANULA;OP-0001;72
-ANULA;OP-0099;69
-ANULA;OP-1;91
-ANULA;op-0001;72
-ANULA;AC-0001;59
-ANULA;;45
-ANULA;45
-ANULA;OP-0001;OP-0002;25
-DEPOSITO;AC-0001;5;16
-CONSULTA;AC-0001;14
-```
-
-`python3 tools/analysis/plan.py probe Q6a` -> secuencia `q6a-anula-deposito`.
-
-#### Q6b - ANULA de una TRANSFER cuyo destino ya gastó el dinero
-
-- Origen vuelve a tener su dinero? (en `ej#13` solo vimos el destino; esta secuencia consulta **ambos**). Destino con 100 y anulación de 400 =>
-  ¿E507? ¿saldo negativo? ¿`ok:false`? El segundo `ANULA;OP-0003` (transfer de vuelta) y de nuevo OP-0002 comprueba el orden.
-
-```
-ALTA;Lucia;82
-ALTA;Mateo;3
-DEPOSITO;AC-0001;1000;35
-TRANSFER;AC-0001;AC-0002;400;94
-TRANSFER;AC-0002;AC-0001;300;91
-ANULA;OP-0002;69
-CONSULTA;AC-0001;14
-CONSULTA;AC-0002;11
-ANULA;OP-0003;66
-ANULA;OP-0002;69
-CONSULTA;AC-0001;14
-CONSULTA;AC-0002;11
-```
-
-`python3 tools/analysis/plan.py probe Q6b` -> secuencia `q6b-anula-transfer-gastada`.
-
-#### Q7 - Contadores tras fallos y ALTA
-
-- ALTA duplicado (`Lucia`, `Lucia`: ¿AC-0002 o error?), `ALTA;Lucia;Gomez` (E302) y luego `ALTA;Ana`: ¿AC-0003 o AC-0002 (E302 no consume)?
-  DEPOSITO/TRANSFER a cuenta inexistente y el OP siguiente. Nombres vacío / `ANA` vs `ana` / de 200 letras.
-
-```
-ALTA;Lucia;82
-ALTA;Lucia;82
-ALTA;Lucia;Gomez;11
-ALTA;Ana;50
-DEPOSITO;AC-0099;100;89
-DEPOSITO;AC-0001;100;82
-TRANSFER;AC-0001;AC-0099;1;41
-DEPOSITO;AC-0001;1;28
-ALTA;;85
-ALTA;;;85
-ALTA;ANA;50
-ALTA;lucia;82
-ALTA;AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA;53
-```
-
-`python3 tools/analysis/plan.py probe Q7` -> secuencia `q7-contadores-y-fallos`.
-
-#### Q9a - Comandos desconocidos y ocultos
-
-- ¿El `mensaje` de E301 es siempre `"comando desconocido "` o depende del comando (`FOO`, vacío)? Cualquier respuesta que no sea 400 E301 es un comando
-  oculto: documentarlo y pedir a fuzzer que lo explore. También `ping` en minúscula (esperado: pong), `PING ` y ` PING` (espacios).
-
-```
-FOO;47
-;1
-ping;64
-PING ;64
- PING;64
-SALDO;38
-BALANCE;57
-SALDOS;55
-HELP;72
-AYUDA;0
-VERSION;86
-VER;56
-STATUS;8
-ESTADO;28
-HISTORIAL;13
-LISTA;9
-CUENTAS;87
-CUENTA;81
-BAJA;39
-RETIRO;83
-RETIRAR;44
-DEBITO;4
-CREDITO;40
-ECHO;61
-TIME;89
-HORA;22
-RESET;34
-INFO;92
-OPERACIONES;18
-OP;12
-CONSULTAR;74
-ANULAR;79
-REVERSA;64
-REVERTIR;71
-DEPOSITAR;46
-TRANSFERIR;81
-TRANSFERENCIA;49
-LIMITE;95
-LIMITES;32
-CLOSE;59
-CIERRE;10
-DUMP;12
-STATS;93
-ADMIN;69
-DEBUG;89
-MODIFICA;89
-BORRA;25
-ELIMINA;68
-```
-
-`python3 tools/analysis/plan.py probe Q9a` -> secuencia `q9a-comandos-desconocidos`.
+Atención: `probe.py` escribe `auth_sent` en el log. Con token válido eso **filtraría el token** en un repo público. Antes de ejecutar este bloque, el caller debe cambiar `probe.py` para
+guardar `auth_sent` ofuscado (`<TOKEN>` en lugar del valor).
 
 ### P2
 
-#### Q11 - Forma de los IDs de cuenta
+- `q7` (ALTA duplicada, qué consume E302/E401, nombres vacío/largo; 13): `python3 tools/analysis/plan.py probe Q7`.
+- `q10` (idempotencia, 5): `... probe Q10`. `q11` (forma de ids de cuenta, 8): `... probe Q11`.
+- `q9a` (48 nombres de comandos; cualquier no-E301 es un comando oculto): `... probe Q9a`. Reordenar: primero los de dinero y cuenta (`SALDO`, `BAJA`, `RETIRO`, `RETIRAR`, `HISTORIAL`, `LIMITE`) con control C2.
+- `q16` (aislamiento por token: otro token no ve AC-0001; contador OP tras reset): `ALTA`, `DEPOSITO`, `/__reset`, `DEPOSITO` y `CONSULTA`, con dos tokens.
+- Canario v2 cada hora (1.8) + `q12c` (esperar 60 s y 5 min entre DEPOSITO y ANULA con token propio) + `q14`.
 
-```
-ALTA;Lucia;82
-CONSULTA;ac-0001;14
-CONSULTA;AC-1;5
-CONSULTA;AC-00001;61
-CONSULTA;AC0001;14
-CONSULTA;AC-0001 ;14
-CONSULTA; AC-0001;14
-CONSULTA;AC-0001-;14
-```
-
-`python3 tools/analysis/plan.py probe Q11` -> secuencia `q11-ids-forma`.
-
-#### Q13 - `X-Req`
-
-- Leer `x_req` de cada línea del log: ¿contador por token? ¿se reinicia con `/__reset`? ¿cuentan los errores?
-
-```
-PING;64
-PING;64
-PING;71
-PING;64
-```
-
-`python3 tools/analysis/plan.py probe Q13` -> secuencia `q13-xreq`.
-
-#### Q12c - ¿El tiempo importa?
-
-- Insertar una espera real de 60 s entre `DEPOSITO` y `ANULA`; repetir con 5 min. Cualquier diferencia respecto a la misma secuencia sin espera
-  indica dependencia del tiempo. (Es el único experimento con espera: ejecutarlo en segundo plano con un token propio.)
-
-```
-ALTA;Lucia;82
-DEPOSITO;AC-0001;1000;35
-<esperar 60 s>
-ANULA;OP-0001;72
-CONSULTA;AC-0001;14
-```
-
-`python3 tools/analysis/plan.py probe Q12c` -> secuencia `q12-timer-anula`.
-
-#### Q12 - Canario de versión (línea base ahora; repetir cada hora hasta las 20:00)
-
-- Los 20 ejemplos en orden + `PING;65`, `CONSULTA;AC-0038;0`, `CONSULTA;AC-0038;97` y `CONSULTA;AC-0001;AC-0002;<c>` (aridad). Comparar con
-  `ejemplos.jsonl` y con la ejecución anterior (diff de status+cuerpo). Cada diferencia => `probe.py concluir` y avisar a system-designer.
-
-```
-PING;64
-ALTA;Lucia;83
-ALTA;Lucia;82
-ALTA;Mateo;3
-CONSULTA;AC-0001;14
-DEPOSITO;AC-0001;250000;86
-TRANSFER;AC-0001;AC-0002;40000;86
-CONSULTA;AC-0002;11
-TRANSFER;AC-0001;AC-0002;120000;55
-TRANSFER;AC-0001;AC-0002;100000;12
-CONSULTa;AC-0001;14
-SALDOS;AC-0001;38
-ANULA;OP-0003;66
-ANULA;OP-0003;66
-CONSULTA;AC-0009;87
-TRANSFER;AC-0002;AC-0001;50000;23
-DEPOSITO;AC-0002;700;5X
-DEPOSITO;AC-0002;700;35
-CONSULTA;AC-0002;11
-ALTA;Lucia;Gomez;11
-PING;65
-CONSULTA;AC-0038;0
-CONSULTA;AC-0038;97
-CONSULTA;AC-0001;AC-0002;92
-```
-
-`python3 tools/analysis/plan.py probe Q12` -> secuencia `canario`.
-
-### P3
-
-#### Q14 - Tamaños y unicode
-
-```
-ALTA;AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA;53
-ALTA;Ñandú;41
-ALTA;Ana
-López;86
-```
-
-`python3 tools/analysis/plan.py probe Q14` -> secuencia `q14-tamanos`.
-
----
+Criterio de parada: no declarar el modelo cerrado mientras haya preguntas abiertas en `spec/preguntas.md` de Q2, Q4b, Q5, Q6 y Q9c.
 
 ## 4. Lo que NO sabemos aunque suene a hecho
 
-- Que el control sea C1 y no C2/C3 **en los bordes**; que los caracteres distintos de `;` y `-` se ignoren.
-- Que el orden de la tubería sea el de la numeración.
-- Que E506 sea un tope por operación (H1): hay tres explicaciones compatibles.
+- Que el esquema `Bearer` sea sensible a mayúsculas (log#98, 102 usaron token inválido).
+- Qué es E506 (cinco hipótesis vivas, 1.5) y cuál es el valor del tope; si DEPOSITO tiene tope.
 - Que ANULA devuelva el dinero al **origen**.
-- Cualquier respuesta a rutas/métodos/cuerpos no `{"m": ...}`.
-- Que el servicio de las 20:00 sea el de los ejemplos.
+- La regla del campo `sugerencia` de E301.
+- La gramática del monto y los E501-E505.
+- Dónde está E101 y cualquier respuesta a cuerpos JSON que no son un objeto con `m`.
+- Que el servicio de las 20:00 sea el de los ejemplos y el de log#4-23 (el log no guarda la hora).

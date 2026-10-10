@@ -26,6 +26,19 @@ responda **exactamente igual, errores incluidos**. Fuente de verdad del reto:
 5. **Toda afirmación de la spec cita `id`s del log.** Una afirmación falsa resta puntos.
 6. Los tokens van en `.env` (ignorado por git). **El repo es público: nunca commitear un token.**
 
+## Método (adaptado de REA, github.com/morluto/rea — solo el método, no la herramienta)
+
+- **Libro de preguntas** en `spec/preguntas.md`: `Q | Pregunta | Estado (respondida/parcial/abierta) | ids | Falta`.
+  Toda tanda empieza leyéndolo y termina actualizándolo. No se declara nada "completo" con preguntas abiertas.
+- Cada conclusión separa **observado** (ids del log) / **inferido** (modelo) / **desconocido**.
+- Negativos acotados: "no existe X" dice qué se barrió ("probados 20 comandos de 4 letras, ids 200-219").
+- Agrupar requests por hipótesis; no repetir un experimento idéntico ya registrado.
+- Cambio de versión: diffear canario contra el log viejo; diferencias = candidatas, no causa.
+
+- Procesos: hay otras sesiones en esta máquina. Nunca `pkill next|node|python`; matar solo el PID propio
+  (`kill $(lsof -ti tcp:<tu puerto>)`). Puertos de este equipo: 3111+ para el reemplazo local.
+- Toda `seq` empieza con su propio `/__reset` (no encadenar estado entre seqs).
+
 ## Entregables
 
 | Entregable | Dónde | Dueño |
