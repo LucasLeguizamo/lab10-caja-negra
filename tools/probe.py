@@ -87,14 +87,19 @@ def call(seq, hip, method, path, body, token, auth_raw=None):
         request = json.loads(body) if body is not None else None
     except ValueError:
         request = body
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")  # para fechar el canario y los cambios de versión
     entry = {"seq": seq, "x_req": h.get("X-Req"), "hipotesis": hip, "request": request,
-             "status": status, "response": resp, "ms": ms}
+             "status": status, "response": resp, "ms": ms, "ts": ts}
     if (method, path) != ("POST", "/msg"):
         entry["method"], entry["path"] = method, path
     # Modo de auth siempre registrado: replay necesita saber qué se mandó.
     # "team" = CAJA_TOKEN del .env (el valor nunca se escribe: repo público).
     if auth_raw is not None:
-        entry["auth"], entry["auth_sent"] = "raw", auth_raw
+        sent = auth_raw
+        for k, v in os.environ.items():
+            if k.startswith("CAJA_TOKEN") and v:
+                sent = sent.replace(v, f"<{k}>")  # el header crudo puede llevar un token real
+        entry["auth"], entry["auth_sent"] = "raw", sent
     elif token is None:
         entry["auth"] = "none"
     elif any(k.startswith("CAJA_TOKEN") and v == token for k, v in os.environ.items()):
