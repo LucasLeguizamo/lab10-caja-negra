@@ -17,10 +17,10 @@ schedules/vigia.md (cron "15 * * * *", UTC)
        │            ¿rama mision/* abierta? → no_reply      ¿sin cambios? → no_reply
        2. clasifica: comando nuevo | cambio de comportamiento | ruido (infra) — consulta la bitácora
        3. reclamar  ──► crea la rama mision/<slug>-<fecha> en GitHub (candado entre sesiones)
-       4. explorador (mismo modelo) ──► sondear/concluir vía probe.py → spec/preguntas.md + spec/especificacion.md
+       4. explorador (mismo modelo) ──► evidencia (log) + sondear/concluir vía probe.py → spec/mision-<slug>.md
        │                              informe Observado (ids) / Inferido / Desconocido
        5. tester (mismo modelo) ──► tests/<slug>.e2e.ts (tester-army/e2e): un test por regla observada, con ids
-       │                         deben FALLAR antes de implementar → fijar_tests (commit; desde aquí tests/ no cambia)
+       │                         deben FALLAR antes de implementar → fijar_tests (commit + push de respaldo; tests/ ya no cambia)
        6. implementador (mismo modelo) ──► lib/service.ts → correr_e2e / verificar (hasta 3 intentos)
        7. publicar ──► verificar de nuevo → commit + push → PR en borrador ([SIN PARIDAD] si no pasa)
        8. bitácora ◄── una línea: fecha, slug, rama, PR, gasto
@@ -40,16 +40,18 @@ Local: `E2E_BASE_URL=http://localhost:3111 pnpm e2e` en la raíz, con **Node ≥
 
 | Archivo | Rol |
 |---|---|
-| `agent/agent.ts`, `instructions.md` | Coordinador: topes por tokens y 6 h por sesión. Decide y delega; no tiene bash ni write_file. |
+| `agent/agent.ts`, `instructions.md` | Coordinador: topes por tokens, compactación temprana, `defaultTools: false` (sin bash, read_file, write_file, web_*, agent). Decide y delega. |
+| `agent/hooks/rescate.ts` | Red de seguridad: si la sesión del root falla (p. ej. tope de tokens) con una misión reclamada sin publicar, publica lo que haya como `[SIN PARIDAD]`. |
 | `agent/lib/modelo.ts` | Modelo de los 3 agentes: `deepseek/deepseek-v4.1-flash` vía OpenRouter (`MISION_MODELO` lo cambia), ventana declarada y límites. |
 | `agent/schedules/vigia.md` | Una sesión por hora (minuto 15 UTC). |
 | `agent/tools/vigia.ts` | Corre `tools/watch.py` y `tools/sondeo_comandos.py`. Un crash (sin línea de resumen) es error, no "cambio". No sondea si hay una misión viva (ver Candado). |
 | `agent/tools/reclamar.ts` | Candado: rama `mision/<slug>-<AAAAMMDD-HHMM>` con un commit vacío de reclamo. Si dos sesiones reclaman a la vez, el segundo push no es fast-forward y falla. |
 | `agent/tools/publicar.ts` | Compuerta → commit de `lib spec tests experimentos.jsonl` (no `tools/`) → push → PR borrador vía API. |
-| `agent/tools/verificar.ts` | Compuerta determinista (`lib/caja.ts`): regla 2 por grep; el log solo crece respecto a `origin/main`; `tests/` intactos desde el commit del tester (`.gate/tests.sha`); build limpio (`rm -rf .next`, con exit code real); servidor de cero en :3111; **`replay.py` de `origin/main`**, no el del sandbox; suite e2e completa sobre el mismo servidor. |
-| `agent/subagents/explorador/` | Solo `sondear`, `concluir`, read/write/grep/glob. **Sin bash**: no puede hablar con el original fuera de probe.py. |
-| `agent/subagents/tester/` | Especialista e2e. `correr_e2e`, `fijar_tests`, read/write/grep/glob. Sin bash ni acceso al original. Comparte el sandbox. |
-| `agent/subagents/implementador/` | Bash + `correr_e2e` + `verificar`. Comparte el sandbox (`defineParentSandbox`). |
+| `verificar` (implementador y `publicar`) | Compuerta determinista (`lib/caja.ts`): regla 2 por grep; el log solo crece respecto a `origin/main`; `tests/` intactos desde el commit del tester (`.gate/tests.sha`); build limpio (`rm -rf .next`, con exit code real); servidor de cero en :3111; **`replay.py` de `origin/main`**, no el del sandbox; suite e2e completa sobre el mismo servidor. |
+| `agent/subagents/explorador/` | Solo `sondear` (≤ 12 mensajes, cortado a 140 s), `concluir`, `evidencia`, read_file/grep acotados y write_file. **Sin bash**: no puede hablar con el original fuera de probe.py. |
+| `agent/subagents/tester/` | Especialista e2e. `correr_e2e`, `fijar_tests`, `evidencia`, read_file/grep acotados, write_file. Sin bash ni acceso al original. Comparte el sandbox. |
+| `agent/subagents/implementador/` | Bash + read_file acotado + write_file + `evidencia` + `correr_e2e` + `verificar`. Comparte el sandbox (`defineParentSandbox`). |
+| `agent/lib/herramientas.ts` | Tools compartidos. `evidencia` lee el log en filas compactas (el log pesa 737 KB: un read entero eran ~200k tokens reenviados en cada turno); `read_file` corta a 250 líneas/24k caracteres; `grep` a 30 coincidencias; `write_file` no reescribe archivos > 20 KB. |
 | `agent/memory/bitacora.ts` | Memoria entre sesiones (ver abajo). |
 | `agent/sandbox.ts` | Vercel Sandbox: snapshot con el repo clonado + `pnpm install`; cada sesión hace `git reset --hard origin/main`. |
 | `agent/lib/red.ts`, `lib/caja.ts` | Política de red y operaciones sobre el repo. Todos los tools pasan por aquí. |
@@ -89,10 +91,10 @@ después de las 20:00. La sesión dura como máximo 11 h.
 | Regla (`CLAUDE.md`) | Mecanismo |
 |---|---|
 | 2. El reemplazo nunca llama al original | `verificar` rechaza `fetch(`, URLs, `railway.app` y `ORIGINAL_URL` en `lib app proxy.ts server.mjs`. |
-| 3. Todo request al original pasa por probe.py | El firewall del sandbox **no deja salir** hacia el original salvo durante `sondear`/`vigia` (`conRed`). `web_fetch`/`web_search` desactivados en los 3 agentes (corren fuera del sandbox). El explorador no tiene bash. |
+| 3. Todo request al original pasa por probe.py | El firewall del sandbox **no deja salir** hacia el original salvo durante `sondear`/`vigia` (`conRed`). `defaultTools: false` en los 4 agentes: sin `web_fetch`/`web_search` (corren fuera del sandbox). El explorador no tiene bash. |
 | 4. Un token = un explorador | `CAJA_TOKEN_AGENTE` propio. Dentro del agente solo explora el explorador, en secuencia. `probe.py` ya serializa las seqs con `.token.lock`. |
 | 5. Toda afirmación cita ids | Instrucciones del explorador y formato del PR: observado / inferido / desconocido. |
-| 6. Nunca commitear un token | Los tokens no entran al sandbox: el firewall inyecta `Authorization` en la frontera. `probe.py` ve el marcador `agente` y registra `auth: "team"`. `publicar` solo hace `git add` de `lib spec tools experimentos.jsonl`. |
+| 6. Nunca commitear un token | Los tokens no entran al sandbox: el firewall inyecta `Authorization` en la frontera. `probe.py` ve el marcador `agente` y registra `auth: "team"`. `publicar` solo hace `git add` de `lib spec tests openapi.yaml docs experimentos.jsonl`. |
 | Nunca editar el log a mano | Solo `probe.py` escribe (`sondear`, `concluir`). `publicar` lo commitea tal cual. |
 
 **Regla 1 ("nada de herramientas que hagan el trabajo por nosotros").** eve es el framework donde corre *nuestro*
@@ -106,7 +108,10 @@ siendo propias. Conviene confirmar con el reto que un agente propio sobre un fra
 - **Misión:** tope de 400 mensajes por sesión del explorador (`defineState`). Con un reintento (dos sesiones) son
   ≤ 800 por misión.
 - **Tokens del modelo:** DeepSeek v4.1 Flash en OpenRouter cuesta $0.30/M de entrada y $1.20/M de salida. Tope del
-  root: 8M de entrada y 400k de salida (≈ $2.90 por sesión); los subagentes reciben una parte de lo que le queda al root.
+  root: 60M de entrada y 2M de salida para todo el día (peor caso ≈ $20). Cada subagente tiene su propio tope más
+  estricto (explorador 10M, tester 4M, implementador 12M): si uno se pasa falla solo él y el root aún publica.
+  En una sesión de cron cruzar el tope del root es terminal (`SESSION_TOKEN_LIMIT_REACHED`, sin prompt de
+  continuación): así murió la misión del 10/10 con el tope viejo de 8M. Si aun así pasa, `hooks/rescate.ts` publica.
   Con proveedor directo eve **no** recibe costo por paso, así que `maxTokenCostUsdPerSession` no contaría nada:
   por eso se limita por tokens. Pon además un tope de gasto en la key de OpenRouter, que sí es un límite real.
 

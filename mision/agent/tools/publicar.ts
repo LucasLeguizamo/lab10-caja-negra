@@ -1,13 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { conRed, sh, verificar } from "../lib/caja";
-import { requerir } from "../lib/red";
-
-const REPO = "LucasLeguizamo/lab10-caja-negra";
-// Solo esto puede cambiar una misión. Ni tools/ (la compuerta usa el replay.py de main, y no debe poder cambiarse
-// desde la misión), ni .env, material/ o configuración de despliegue.
-const RUTAS = "lib spec tests openapi.yaml docs experimentos.jsonl";
+import { abrirPr, verificar } from "../lib/caja";
 
 export default defineTool({
   availableInSubagents: false,
@@ -27,27 +21,6 @@ export default defineTool({
     if ("pendiente" in gate) return gate;
     const titular = gate.ok ? titulo : `[SIN PARIDAD] ${titulo}`;
     const texto = `${cuerpo}\n\n## Compuerta (${gate.etapa}: ${gate.ok ? "pasa" : "NO pasa"})\n\n\`\`\`\n${gate.detalle.slice(-3000)}\n\`\`\``;
-
-    const rama = await conRed(ctx, ["github"], async (s) => {
-      const cur = (await sh(s, "git rev-parse --abbrev-ref HEAD")).stdout.trim();
-      if (!cur.startsWith("mision/")) throw new Error(`rama ${cur}: falta reclamar la misión`);
-      const r = await sh(
-        s,
-        `git add ${RUTAS} && git -c user.name=mision-caja -c user.email=mision@caja.local commit --allow-empty -m "$MSG" && git push origin ${cur}`,
-        { MSG: `feat(mision): ${titular}` },
-      );
-      if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
-      const base = (await sh(s, "cat .gate/base 2>/dev/null || echo main")).stdout.trim();
-      return { cur, base };
-    });
-
-    const res = await fetch(`https://api.github.com/repos/${REPO}/pulls`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${requerir("GITHUB_TOKEN")}`, accept: "application/vnd.github+json" },
-      body: JSON.stringify({ title: titular, head: rama.cur, base: rama.base, draft: true, body: texto }),
-    });
-    if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
-    const pr = (await res.json()) as { html_url: string };
-    return { paridad: gate.ok, rama: rama.cur, base: rama.base, pr: pr.html_url };
+    return { paridad: gate.ok, ...(await abrirPr(ctx, titular, texto)) };
   },
 });
