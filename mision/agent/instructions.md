@@ -12,7 +12,9 @@ La sesión del cron dura todo el día del reto: haces **pasadas** (pasos 1-8) en
 Si es null, ya no cabe otra hoy: termina con `no_reply`. Nunca calcules la hora tú: usa ese campo.
 
 1. Llama a `vigia`.
-   - `misionAbierta`: ya hay una misión esperando revisión. No hagas nada más en esta pasada (ve al bucle).
+   - `misionAbierta`: hay una exploración en curso (otra sesión, mismo token). No hagas nada más en esta pasada.
+   - `publicadas`: misiones con PR abierto, sin mergear (la más nueva última). Su arreglo aún no está en main, así que
+     `watch` seguirá mostrando esas diferencias: no son nuevas. Úsalas en el paso 2.
    - `cambios: false`: pasada limpia, ve al bucle. No escribas en la bitácora por una pasada limpia.
    - `cambios: true`: sigue.
    - Si trae `huerfanas` (ramas de misiones cuya sesión murió), anótalas en la bitácora para que una persona las borre.
@@ -24,7 +26,14 @@ Si es null, ya no cabe otra hoy: termina con `no_reply`. Nunca calcules la hora 
    - **Ruido**: `posibleRateLimit: true` (rate-limit), o respuestas 401 en todo (token caducado o reto cerrado).
      Anótalo en la bitácora y ve al bucle. Ante la duda entre ruido y cambio, es ruido: una pasada después lo confirma.
    Revisa la bitácora: si ese mismo hallazgo ya se clasificó como falso positivo, ve al bucle.
-3. Llama a `reclamar` con un slug corto (p. ej. `cmd-retiro`, `cambio-e506`). Si falla, otra sesión lo tiene: ve al bucle.
+   **Cubierto o siguiente fix:** compara cada diferencia con el `asunto` de cada misión de `publicadas` (y su línea
+   en la bitácora). Si todas caen dentro de lo que ya arregla alguna, ve al bucle. Si queda al menos una sin cubrir
+   (otro comando, otro código de error, otro formato), esa es la siguiente misión: propón su fix aunque haya PRs
+   abiertos. Una misión por pasada; si quedan varias sin cubrir, empieza por la que rompe más ejemplos del canario.
+3. Llama a `reclamar` con un slug corto (p. ej. `cmd-retiro`, `cambio-e506`). Si hay `publicadas`, pasa `base` = la
+   rama de la más nueva: el arreglo nuevo se apila encima y la compuerta lo verifica junto con los anteriores.
+   Si falla, otra sesión lo tiene: ve al bucle.
+   Al delegar (pasos 4-6), di qué cubren las misiones publicadas para que nadie las rehaga: solo lo no cubierto.
 4. Delega en `explorador` con TODO el contexto (no ve tu historial): la diferencia exacta, los ids del vigía y lo
    que ya se sabe. Espera su informe: reglas observadas con ids, lo inferido, lo desconocido.
 5. Delega en `tester` con el informe completo del explorador y el slug. Escribe `tests/<slug>.e2e.ts`, comprueba que
@@ -33,9 +42,12 @@ Si es null, ya no cabe otra hoy: termina con `no_reply`. Nunca calcules la hora 
    `verificar` pasa (replay del log + suite e2e, sin tocar tests/).
    Si vuelve sin paridad, puedes devolverle el fallo una vez más (mismo `taskId`). Si tampoco, ve a 7 igual.
    Si el implementador cree que un test está mal, no lo cambia: lo dice, y tú lo pones en el cuerpo del PR.
-7. Llama a `publicar` con un título y un cuerpo que separe observado (ids) / inferido / desconocido.
+7. Llama a `publicar` con un título que nombre exactamente lo que cubre (comando y código, p. ej. "TRANSFER: E506
+   sobre 100000") —las pasadas siguientes lo leen para decidir qué falta— y un cuerpo que separe observado (ids) /
+   inferido / desconocido.
    `publicar` repite la compuerta y abre el PR en borrador; sin paridad lo marca `[SIN PARIDAD]`. Siempre publica:
-   la rama reclamada bloquea al vigía hasta que una persona cierre o mergee el PR.
+   si es apilada, el PR va contra la rama base. Publicada, la misión deja de bloquear: la próxima pasada sigue
+   buscando lo que falte.
 8. Guarda en la bitácora una línea: fecha, slug, rama, PR o motivo de fallo, requests gastados.
 
 # Reglas duras (del repo; romperlas anula el trabajo)

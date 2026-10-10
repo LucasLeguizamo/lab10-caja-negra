@@ -14,7 +14,8 @@ export default defineTool({
   description:
     "Cierra la misión: corre la compuerta de paridad, commitea lib/ spec/ tests/ openapi.yaml docs/ experimentos.jsonl en la rama " +
     "reclamada, hace push y abre un PR en borrador contra main. Sin paridad, el título lleva [SIN PARIDAD] y el cuerpo " +
-    "el fallo: la evidencia nunca se pierde y una persona decide. No despliega ni mergea.",
+    "el fallo: la evidencia nunca se pierde y una persona decide. No despliega ni mergea. Si la misión se reclamó " +
+    "apilada, el PR va contra la rama base (solo muestra el arreglo nuevo).",
   inputSchema: z.object({
     titulo: z.string().min(10).max(72),
     cuerpo: z.string().min(50).describe("qué comando, qué se observó (ids), qué se infirió, qué queda abierto"),
@@ -33,16 +34,17 @@ export default defineTool({
         { MSG: `feat(mision): ${titular}` },
       );
       if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout);
-      return cur;
+      const base = (await sh(s, "cat .gate/base 2>/dev/null || echo main")).stdout.trim();
+      return { cur, base };
     });
 
     const res = await fetch(`https://api.github.com/repos/${REPO}/pulls`, {
       method: "POST",
       headers: { authorization: `Bearer ${requerir("GITHUB_TOKEN")}`, accept: "application/vnd.github+json" },
-      body: JSON.stringify({ title: titular, head: rama, base: "main", draft: true, body: texto }),
+      body: JSON.stringify({ title: titular, head: rama.cur, base: rama.base, draft: true, body: texto }),
     });
     if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
     const pr = (await res.json()) as { html_url: string };
-    return { paridad: gate.ok, rama, pr: pr.html_url };
+    return { paridad: gate.ok, rama: rama.cur, base: rama.base, pr: pr.html_url };
   },
 });
