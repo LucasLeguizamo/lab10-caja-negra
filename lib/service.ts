@@ -21,7 +21,7 @@ const kvUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
 const kvToken = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
 const redis = kvUrl && kvToken ? new Redis({ url: kvUrl, token: kvToken }) : null;
 // Prefijo por entorno: preview y production comparten la base de Upstash, no el estado.
-const K = ((p) => ({ store: `${p}:store`, xreq: `${p}:xreq`, lock: `${p}:lock` }))(`caja:${process.env.VERCEL_ENV ?? "local"}`);
+const K = ((p) => ({ store: `${p}:store`, xreq: `${p}:xreq`, lock: `${p}:lock`, vuelo: `${p}:vuelo` }))(`caja:${process.env.VERCEL_ENV ?? "local"}`);
 
 type Dump = { cuentas: [string, number][]; ops: [string, Op][]; nextAC: number; nextOP: number };
 const load = (d: Dump | null): Store =>
@@ -45,6 +45,22 @@ async function withStore<T>(fn: (st: Store) => T): Promise<T> {
   } finally {
     await redis.eval(UNLOCK, [K.lock], [id]);
   }
+}
+
+// Caja de vuelo: cada request recibido y lo que respondimos, para reconstruir las corridas del set (tools/corrida.py).
+// Ninguna credencial se guarda: "team" si es la nuestra; si no, solo su forma ("Bearer <otro>", "Basic <otro>",
+// "Bearer " vacío). Basta para el replay: toda credencial inválida da el mismo E001 (ids 95-102).
+// ponytail: lista acotada a 20k entradas (~100 tests x 12 pasos x muchas corridas); sin Redis no se graba.
+// "Bearer abc" -> "Bearer <otro>", "Basic x" -> "Basic <otro>", "abc" -> "<otro>"; "Bearer " y "" quedan (no llevan secreto).
+const forma = (a: string | null) =>
+  a === null || /^\S*\s*$/.test(a) && /\s$|^$/.test(a) ? a : /^\S+\s+\S/.test(a) ? a.replace(/^(\S+\s+)[\s\S]*$/, "$1<otro>") : "<otro>";
+export async function record(e: { method: string; path: string; auth: string | null; body: string; ua: string | null; ct: string | null; res: Reply }) {
+  if (!redis) return;
+  const team = process.env.TEAM_TOKEN && e.auth === `Bearer ${process.env.TEAM_TOKEN}`;
+  const row = { ts: Date.now(), method: e.method, path: e.path, auth: team ? "team" : forma(e.auth), body: e.body,
+    ua: e.ua, ct: e.ct, status: e.res.status, response: e.res.body };
+  await redis.lpush(K.vuelo, JSON.stringify(row));
+  await redis.ltrim(K.vuelo, 0, 19999);
 }
 
 const err = (status: number, error: string, mensaje: string, extra?: object): Reply => ({
