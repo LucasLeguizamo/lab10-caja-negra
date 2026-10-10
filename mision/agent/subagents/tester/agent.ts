@@ -9,5 +9,6 @@ export default defineAgent({
     "esperada antes de implementar, y los fija.",
   model: modelo(),
   modelContextWindowTokens: VENTANA,
-  reasoning: "high",
+  // medium: cada turno era ~2 min con high; las compuertas deterministas sostienen la calidad, no el razonamiento.
+  reasoning: "medium",
 });
