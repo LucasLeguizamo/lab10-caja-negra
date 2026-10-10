@@ -32,10 +32,12 @@ def load_env():
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def send(method, path, body, token):
+def send(method, path, body, token, auth_raw=None):
     base = os.environ.get("ORIGINAL_URL", "https://caja-negra-production-c64f.up.railway.app")
     headers = {"Content-Type": "application/json"}
-    if token is not None:
+    if auth_raw is not None:
+        headers["Authorization"] = auth_raw  # valor crudo del header: otro esquema, vacío, minúsculas...
+    elif token is not None:
         headers["Authorization"] = f"Bearer {token}"
     data = body.encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
@@ -79,8 +81,8 @@ def conclude(i, text):
     print(json.dumps(hit[0], ensure_ascii=False))
 
 
-def call(seq, hip, method, path, body, token):
-    status, resp, h, ms = send(method, path, body, token)
+def call(seq, hip, method, path, body, token, auth_raw=None):
+    status, resp, h, ms = send(method, path, body, token, auth_raw)
     try:
         request = json.loads(body) if body is not None else None
     except ValueError:
@@ -89,6 +91,8 @@ def call(seq, hip, method, path, body, token):
              "status": status, "response": resp, "ms": ms}
     if (method, path) != ("POST", "/msg"):
         entry["method"], entry["path"] = method, path
+    if auth_raw is not None:
+        entry["auth_sent"] = auth_raw  # qué se mandó realmente en Authorization
     if h.get("X-Frontier-Infra"):
         entry["infra"] = h["X-Frontier-Infra"]  # respuesta de la infraestructura, no del servicio
         print(f"!! infra: {entry['infra']} — baja el ritmo", file=sys.stderr)
@@ -105,6 +109,7 @@ def main():
     r.add_argument("seq"); r.add_argument("hipotesis"); r.add_argument("method"); r.add_argument("path")
     r.add_argument("body", nargs="?")
     r.add_argument("--no-auth", action="store_true"); r.add_argument("--token")
+    r.add_argument("--auth-raw", help="valor crudo del header Authorization (otro esquema, vacío, minúsculas...)")
     c = sub.add_parser("concluir")
     c.add_argument("id", type=int); c.add_argument("texto")
     a = p.parse_args()
@@ -120,8 +125,8 @@ def main():
         for m in a.m:
             call(a.seq, a.hipotesis, "POST", "/msg", json.dumps({"m": m}, ensure_ascii=False), token)
     else:
-        tok = None if a.no_auth else (a.token or token)
-        call(a.seq, a.hipotesis, a.method.upper(), a.path, a.body, tok)
+        tok = None if a.no_auth else (a.token if a.token is not None else token)
+        call(a.seq, a.hipotesis, a.method.upper(), a.path, a.body, tok, a.auth_raw)
 
 
 if __name__ == "__main__":
