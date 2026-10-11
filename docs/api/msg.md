@@ -2,7 +2,9 @@
 
 > Documentación del repositorio. **El reemplazo no sirve este archivo** (cualquier ruta inexistente responde 404 E404).
 > Fuente: `spec/especificacion.md` (log ids 1-731) y `lib/service.ts`. Definición OpenAPI: [`openapi.yaml`](../../openapi.yaml) (`/msg`, `x-commands`, `x-error-precedence`).
-> Versión descrita: la observada hasta el id 731 (2026-10-10T13:00:14-0500). Lo que cuenta es la versión de las 20:00 (ver sección 12).
+> Versión descrita: **v2** (versión vigente, ids 791-1568, tarde del 2026-10-11) sobre la base de los ids 1-731 (mañana del
+> 2026-10-10): `saldo` string decimal, tope E506 = 50000 con exención por homónimos, bloqueo E510, HALT/E520/E599 y NOTAS
+> (ver sección 12). Los ids citados sin más son de la mañana; los de la tarde van también con id.
 
 ## Índice
 
@@ -11,7 +13,7 @@
 3. [Integridad y dígito de control](#3-integridad-y-dígito-de-control)
 4. [Respuestas por status](#4-respuestas-por-status)
 5. [Orden de evaluación de errores](#5-orden-de-evaluación-de-errores)
-6. [Comandos](#6-comandos): [PING](#ping) · [ALTA](#alta) · [CONSULTA](#consulta) · [DEPOSITO](#deposito) · [TRANSFER](#transfer) · [ANULA](#anula) · [desconocidos](#comandos-desconocidos-y-aridad)
+6. [Comandos](#6-comandos): [PING](#ping) · [ALTA](#alta) · [CONSULTA](#consulta) · [DEPOSITO](#deposito) · [TRANSFER](#transfer) · [ANULA](#anula) · [HALT](#halt) · [NOTAS](#notas) · [desconocidos](#comandos-desconocidos-y-aridad)
 7. [Estado y memoria](#7-estado-y-memoria-entre-requests)
 8. [Catálogo de errores](#8-catálogo-de-errores)
 9. [Ejemplos curl](#9-ejemplos-curl)
@@ -78,10 +80,11 @@ Todas llevan el header `X-Req` (contador por token, string numérico) salvo los 
 | Status | Cuerpo exacto | Cuándo |
 |---|---|---|
 | 200 | `{"pong":true}` | PING |
-| 200 | `{"cuenta_id":"AC-0001","saldo":0}` | CONSULTA (clave `cuenta_id`; `saldo` entero, puede ser negativo o > 2^32) |
+| 200 | `{"cuenta_id":"AC-0001","saldo":"0.00"}` | CONSULTA (clave `cuenta_id`; v2: `saldo` string decimal de 2 cifras = centavos/100, sin separador de miles, negativo con `-`, nunca `-0.00`) |
 | 200 | `{"status":"recieved","operacionId":"OP-0001"}` | DEPOSITO / TRANSFER (typo `recieved`) |
 | 200 | `{"ok":true,"anulada":"OP-0003"}` | ANULA, primera vez |
 | 200 | `{"ok":false,"motivo":"ya anulada"}` | ANULA repetida (fallo de negocio con status 200) |
+| 200 | `{"notas":[{"id":"N-01","texto":"Pendiente de la migración: …"}]}` | NOTAS (cuerpo constante) |
 | 201 | `{"cuentaId":"AC-0001"}` | ALTA (clave `cuentaId`) |
 | 400 | `{"error":"E100","mensaje":"json inválido"}` | Cuerpo no JSON |
 | 400 | `{"error":"E102","mensaje":"falta m"}` | JSON sin `m` string |
@@ -95,17 +98,21 @@ Todas llevan el header `X-Req` (contador por token, string numérico) salvo los 
 | 400 | `{"error":"E303","mensaje":"monto inválido"}` | Monto inválido (DEPOSITO/TRANSFER) |
 | 400 | `{"error":"E304","mensaje":"origen y destino iguales"}` | TRANSFER con origen == destino |
 | 401 | `{"error":"E001","mensaje":"no autorizado"}` | Auth (sin `X-Req`) |
+| 409 | `{"error":"E520","mensaje":"operación destructiva: detiene el servicio; reenvía con confirmación"}` | HALT sin el argumento exacto `1` (sin efecto) |
 | 404 | `{"error":"E401","mensaje":"cuenta inexistente"}` | Cuenta inexistente o id mal formado |
 | 404 | `{"error":"E402","mensaje":"operación inexistente"}` | Operación inexistente o id mal formado (con acento) |
 | 413 | `{"error":"E101","mensaje":"cuerpo demasiado grande"}` | Cuerpo > 8192 bytes |
-| 422 | `{"error":"E506","mensaje":"límite excedido"}` | TRANSFER con monto > 100000 |
-| 422 | `{"error":"E507","mensaje":"saldo insuficiente"}` | TRANSFER con monto <= 100000 y > saldo del origen |
+| 422 | `{"error":"E506","mensaje":"límite excedido"}` | TRANSFER con monto > 50000 y nombres (ALTA) distintos; exento si el nombre es exactamente igual |
+| 422 | `{"error":"E507","mensaje":"saldo insuficiente"}` | TRANSFER con monto <= 50000 (o exento de E506) y > saldo del origen |
+| 423 | `{"error":"E510","mensaje":"cuenta bloqueada","intentos":1}` | TRANSFER desde una cuenta origen bloqueada por 3 fallos E506/E507 |
+| 503 | `{"error":"E599","mensaje":"service halted"}` | HALT;1 y todo `POST /msg` autenticado mientras está detenido |
 
 ## 5. Orden de evaluación de errores
 
 Pipeline completo observado (ERR-29), de primero a último:
 
-`E404 → E001 → E101 → E100/E102 → E103/E104 → [PING: pong o E302] → E201 → E202 → E301 → E302 → E303 → E304 → E401 → E506 → E507`.
+`E404 → E001 → E101 → E100/E102 → E103/E104 → [PING: pong o E302] → E201 → E202 → E301 → E302 → E303 → E304 → E401 → E510 → E506 → E507`.
+HALT: `... → E201 → E202 → E302 → [503 E599 si el argumento es `1`; 409 E520 si no]`.
 ANULA: `... → E302 → E402 → ejecución`.
 
 Por comando (con control correcto):
@@ -116,19 +123,24 @@ Por comando (con control correcto):
 | ALTA | E302 → 201 |
 | CONSULTA | E302 → E401 → 200 |
 | DEPOSITO | E302 → E303 → E401 → 200 |
-| TRANSFER | E302 → E303 → E304 → E401 → E506 → E507 → 200 |
+| TRANSFER | E302 → E303 → E304 → E401 → E510 → E506 → E507 → 200 |
+| HALT | E201/E202 → E302 → 503 E599 (`1`) / 409 E520 (otro valor) |
+| NOTAS | E201/E202 → E302 → 200 |
 | ANULA | E302 → E402 → 200 (ok:true / ya anulada) |
 | otros | E301 (nunca E302) |
 
 Confianza: confirmado, salvo los eslabones con una sola muestra (probable): E101>E100 (570; E101>E102 tiene tres: 571, 572, 573),
-E304>E401 con cuenta inexistente (473), E506>E507 (227) y E202>E303 (inferido por transitividad). **Desconocido**: E103 y E104 frente a
-E302/E202 en comandos no-PING con más de un fallo; E101 frente a esquemas de auth distintos de `Bearer`.
+E304>E401 con cuenta inexistente (473), E506>E507 (227, 1350-1352) y E202>E303 (inferido por transitividad). La escalera v2
+E202>E302>E303>E304>E401>E510>E506>E507 está sondeada en 1552-1560 (E304 1552, E401 1553, E303 1554-1555, E302 1558-1559,
+E202 1560) y E510>E506 en 842 y 1350-1353. **Desconocido**: E103 y E104 frente a E302/E202 en comandos no-PING con más de un
+fallo; E101 frente a esquemas de auth distintos de `Bearer`; E510 frente a E401 (sin sondear) y E510/E506 frente a la auth.
 
 ---
 
 ## 6. Comandos
 
-Seis comandos: `PING`, `ALTA`, `CONSULTA`, `DEPOSITO`, `TRANSFER`, `ANULA`. En las firmas, `<ctrl>` es el control (sección 3).
+Ocho comandos: `PING`, `ALTA`, `CONSULTA`, `DEPOSITO`, `TRANSFER`, `ANULA`, `HALT` y `NOTAS`. En las firmas, `<ctrl>` es el control (sección 3).
+`HALT` y `NOTAS` son v2 (tarde: ids 910, 1031, 1284, 1285).
 
 ### PING
 
@@ -171,13 +183,13 @@ Firma `CONSULTA;<cuenta>;<ctrl>` · aridad 1. Solo lectura.
 
 | Resultado | Status | Cuerpo |
 |---|---|---|
-| Cuenta existente | 200 | `{"cuenta_id":"AC-0001","saldo":0}` |
+| Cuenta existente | 200 | `{"cuenta_id":"AC-0001","saldo":"0.00"}` |
 | Cuenta inexistente / id mal formado | 404 | `{"error":"E401","mensaje":"cuenta inexistente"}` |
 | Aridad | 400 | E302 |
 
 | ID | Comportamiento | Evidencia | Confianza |
 |---|---|---|---|
-| CMD-8 | Cuenta existente: **200** `{"cuenta_id":"AC-0001","saldo":0}` (clave `cuenta_id`, snake_case, distinta de `cuentaId` de ALTA); `saldo` es un entero JSON (puede superar 2^32 y puede ser negativo). | 8, 11, 14, 22, 109; 197, 199 (3258483649, 7553450945); 285 (-500), 585 (-900), 648 (-300) | confirmado |
+| CMD-8 | Cuenta existente: **200** `{"cuenta_id":"AC-0001","saldo":"0.00"}` (clave `cuenta_id`, snake_case, distinta de `cuentaId` de ALTA). **v2: `saldo` es un string decimal de exactamente 2 cifras = centavos/100**, sin separador de miles, sin `-0.00`, con `-` si es negativo; la aritmética no se reescala (el monto entra/sale 1:1). Muestras: 0→`"0.00"` (813, 1489), 7→`"0.07"` (1542), 1→`"0.01"` (1425), -1→`"-0.01"` (1424), 500→`"5.00"` (1107), 10000→`"100.00"` (1084), 12345→`"123.45"` (1540), 12246→`"122.46"` (1544), 40000→`"400.00"` (816, 1492), 40700→`"407.00"` (827, 1503), 210000→`"2100.00"` (819, 1495), 60000→`"600.00"` (1568), 9999999999→`"99999999.99"` (833), 10000000099→`"100000000.99"` (869), 9999939999→`"99999399.99"` (1567), -990→`"-9.90"` (1204). | 8, 11, 14, 22, 109; 813, 816, 819, 827, 833, 846, 869, 1084, 1107, 1204, 1424, 1425, 1427, 1489, 1492, 1495, 1503, 1540, 1542, 1544, 1547, 1567, 1568 | confirmado |
 | CMD-9 | Cuenta inexistente (con control correcto): **404** `{"error":"E401","mensaje":"cuenta inexistente"}`; vale también para ids mal formados (INT-17). | 18, 124, 126, 127, 316, 317, 318, 319, 363 | confirmado |
 | CMD-10 | Cero argumentos (`CONSULTA;11`, control correcto) → 400 E302. | 139 | probable |
 
@@ -205,7 +217,8 @@ Firma `DEPOSITO;<cuenta>;<monto>;<ctrl>` · aridad 2. Efecto: suma el monto al s
 ### TRANSFER
 
 Firma `TRANSFER;<origen>;<destino>;<monto>;<ctrl>` · aridad 3. Efecto: resta el monto al origen, lo suma al destino, consume un número `OP-`.
-Tope por operación 100000 (no acumulado). Transferir exactamente el saldo está permitido.
+**v2: tope por operación 50000** (no acumulado), **exento si origen y destino tienen el mismo nombre exacto dado en ALTA**;
+tras 3 fallos E506/E507 del origen la cuenta queda bloqueada (423 E510). Transferir exactamente el saldo está permitido.
 
 | Resultado | Status | Cuerpo |
 |---|---|---|
@@ -214,17 +227,20 @@ Tope por operación 100000 (no acumulado). Transferir exactamente el saldo está
 | Monto inválido | 400 | E303 |
 | Origen == destino | 400 | `{"error":"E304","mensaje":"origen y destino iguales"}` |
 | Origen o destino inexistente | 404 | E401 |
-| Monto > 100000 | 422 | `{"error":"E506","mensaje":"límite excedido"}` |
-| Monto <= 100000 y > saldo del origen | 422 | `{"error":"E507","mensaje":"saldo insuficiente"}` |
+| Origen bloqueado (3 fallos E506/E507) | 423 | `{"error":"E510","mensaje":"cuenta bloqueada","intentos":N}` |
+| Monto > 50000 y nombres (ALTA) distintos | 422 | `{"error":"E506","mensaje":"límite excedido"}` |
+| Monto <= 50000 (o exento de E506) y > saldo del origen | 422 | `{"error":"E507","mensaje":"saldo insuficiente"}` |
 
 | ID | Comportamiento | Evidencia | Confianza |
 |---|---|---|---|
 | CMD-16 | Éxito: **200** `{"status":"recieved","operacionId":"OP-0002"}`, mismo formato que DEPOSITO. | 10, 13, 228, 237, 257, 300 | confirmado |
 | CMD-17 | Resta el monto al origen y lo suma al destino. Ej.: tras depositar 250000 en AC-0001 y transferir 40000 a AC-0002, AC-0002 tiene 40000; tras otra de 100000, AC-0001 tiene 110000; tras transferir 1 de AC-0001 (saldo 5000) quedan 4999 y 1. | 9, 10, 11, 13, 14; 231, 232 | confirmado |
-| CMD-18 | **Tope por operación de 100000**: un monto > 100000 → **422** `{"error":"E506","mensaje":"límite excedido"}` (120000, 100001, 9999999999); 100000 pasa. No es acumulado ni proporcional al saldo ni depende del destino: tres transferencias seguidas de 100000 con saldo 5000000 pasan; 120000 en estado fresco con saldo 1000006 (12 % del saldo, nada transferido antes) da E506, también a otro destino y repetido; y 9999999999 con saldo 5000 da E506 (no E507). | 12 (120000 → E506), 13 (100000 pasa), 300, 301, 302 (3×100000 pasan), 303 (100001 → E506), 227 (9999999999, saldo 5000 → E506), 398, 399, 400 (120000 con saldo 1000006: E506 ×3; saldos intactos en 401-403) | confirmado |
-| CMD-19 | **Saldo insuficiente**: monto ≤ 100000 y mayor que el saldo del origen → **422** `{"error":"E507","mensaje":"saldo insuficiente"}` (5000 con saldo 4999, 5001, 1 con saldo 0, 50000 con saldo 40000, 600 con saldo 500). Con **saldo negativo** (tras ANULA, CMD-28) cualquier monto da E507 (1 con saldo -900). Transferir **exactamente el saldo** está permitido. | 19, 229, 230, 338, 594 (E507); 587 (1 con saldo -900 → E507); 335 (50 con saldo 50 → 200, saldo queda 0); 595 (500 con saldo 500 → 200, saldo queda 0) | confirmado |
-| CMD-20 | Origen o destino inexistente (o ambos) → 404 E401, con cualquier monto válido (también > 100000 o > saldo: E401 gana a E506/E507). | 320, 321, 322, 324, 325, 326, 331, 332 | confirmado |
-| CMD-21 | Origen == destino (cuenta existente) → 400 `{"error":"E304","mensaje":"origen y destino iguales"}`, con cualquier monto válido (gana a E506/E507); con monto inválido da E303. | 327, 328, 329 (E304); 330 (monto 0 → E303) | confirmado |
+| CMD-18 | **v2: tope por operación de 50000** (antes 100000): un monto > 50000 → **422** `{"error":"E506","mensaje":"límite excedido"}` (`í` acentuada, sin campos extra). 50000 **pasa** (838, 1500 → E507 por saldo, 1556); 50001 (839, 1129, 1350, 1557), 60000 (841), 75000 (840), 100000 (795, 1471, 1494) y 120000 (817, 1493) fallan. No es acumulado: dos de 30000 (suma 60000) → 200 y 200 (1565, 1566). No depende del saldo: con saldo 0, 50001 da E506 y no E507 (1350-1352). No aplica a DEPOSITO (832, 1490, 1502). El rechazo E506 **suma al contador de fallos del origen** que lleva al bloqueo E510 (1111-1114, 1353). | 795, 817, 838-841, 1129, 1350, 1471, 1493, 1494, 1500, 1556, 1557; no acumula: 1565, 1566; no DEPOSITO: 832, 1490, 1502 | confirmado |
+| CMD-34 | **Exención de E506 por homónimos**: si el nombre guardado en ALTA de origen y destino es el **mismo string exacto** (sin normalizar mayúsculas, espacios ni NFC/NFD), `50001` pasa (Ana→Ana → 200 OP-0002, 1388); `Ana`→`ANA` (1389), `Ana`→`Ana ` con espacio final (1390) y `Ana`→`Bob` (1391) → 422 E506. | 1388, 1389, 1390, 1391; 818, 1157-1165, 1253-1258 | confirmado (igualdad exacta) / **desconocido**: normalización NFC/NFD o plegados de mayúsculas |
+| CMD-19 | **Saldo insuficiente**: monto ≤ 50000 (o exento de E506) y mayor que el saldo del origen → **422** `{"error":"E507","mensaje":"saldo insuficiente"}` (5000 con saldo 4999, 5001, 1 con saldo 0, 600 con saldo 500, 50000 con saldo 0 → 1500). Con **saldo negativo** (tras ANULA, CMD-28) cualquier monto da E507 (1 con saldo -900). Transferir **exactamente el saldo** está permitido (335, 595). | 19, 229, 230, 338, 594, 1500 (E507); 587 (1 con saldo -900 → E507); 335 (50 con saldo 50 → 200); 595 (500 con saldo 500 → 200) | confirmado |
+| CMD-36 | **Bloqueo E510**: 3 rechazos E506/E507 desde la misma cuenta origen la bloquean; el siguiente TRANSFER desde ella → **423** `{"error":"E510","mensaje":"cuenta bloqueada","intentos":N}` (N entero de conteo, creciente; el intento bloqueado no suma fallos). Un DEPOSITO en la cuenta (o un TRANSFER exitoso desde ella) la desbloquea. | 842, 843 (intentos 1, 2), 1111-1114, 1187-1191, 1216-1229, 1246-1251, 1269-1275, 1353, 1456 | confirmado |
+| CMD-20 | Origen o destino inexistente (o ambos) → 404 E401, con cualquier monto válido (también > 50000 o > saldo: E401 gana a E510/E506/E507; 1553). | 320, 321, 322, 324, 325, 326, 331, 332, 1553 | confirmado |
+| CMD-21 | Origen == destino (cuenta existente) → 400 `{"error":"E304","mensaje":"origen y destino iguales"}`, con cualquier monto válido (gana a E506/E507, 329, 1552); con monto inválido da E303. | 327, 328, 329 (E304); 330 (monto 0 → E303); 1552 (60000 con origen==destino → E304) | confirmado |
 | CMD-22 | E506, E507, E401, E303 y E304 no consumen número de operación (ver MEM-8). | 227 → 228; 310-334 → 335 | confirmado |
 | CMD-23 | Monto inválido → 400 E303 (INT-16), también con cuenta inexistente. | 215-226, 323 | confirmado |
 
@@ -252,16 +268,43 @@ No consume número de operación. Sin ventana de tiempo observada (5 y 35 min).
 | CMD-30 | Operación inexistente o mal formada → **404** `{"error":"E402","mensaje":"operación inexistente"}` (con acento). Vale para `OP-9999`, `OP-0000`, `OP-0003` aún no creada, `XX-1`, `op-0001`, `OP-1`, `OP-00001`, `OP-0001 `, `0001` y `AC-0001`. | 238-247 | confirmado |
 | CMD-31 | Aridad: dos argumentos (`ANULA;OP-0001;x;45`, también con dos operaciones inexistentes `ANULA;OP-0001;OP-0002;25` y `ANULA;OP-9999;x;79`) → 400 E302 (gana a E402); cero argumentos (`ANULA;45`) → 400 E302; argumento vacío (`ANULA;;45`) → 400 E104. | 248, 547, 557 (2 args); 546 (0 args); 249 (E104) | confirmado (2 args) / probable (0 args, E104) |
 
+### HALT
+
+Firma `HALT;<confirmación>;<ctrl>` · aridad 1 · v2 (tarde: ids 910, 1133, 1284, 1285, 1393-1415). Detiene el servicio.
+
+| Resultado | Status | Cuerpo |
+|---|---|---|
+| Confirmación exacta `1` | 503 | `{"error":"E599","mensaje":"service halted"}` |
+| Cualquier otro argumento (`0`, `00`, `2`, `true`, `yes`, `01`, `11`, `10`, `confirm`, `A`, `-1`, `" 1"`, `"1 "`) | 409 | `{"error":"E520","mensaje":"operación destructiva: detiene el servicio; reenvía con confirmación"}` |
+| Control malo / aridad mala | 400 | E201 / E202 / E302 |
+
+| ID | Comportamiento | Evidencia | Confianza |
+|---|---|---|---|
+| CMD-37 | **HALT con el argumento exacto `1`** deja el servicio detenido hasta el próximo `POST /__reset` (que lo revive; 1328-1331) y devuelve **503** `{"error":"E599","mensaje":"service halted"}`. Mientras está detenido, **todo `POST /msg` autenticado** da 503 E599, incluso con cuerpo JSON roto o > 8192 bytes (la compuerta va antes de parsear y de los límites; 1313-1327); sin token sigue 401 y `GET /health` sigue 200 y `GET /nada` 404 (1319-1322). Cualquier otra confirmación → **409** `{"error":"E520","mensaje":"operación destructiva: detiene el servicio; reenvía con confirmación"}` sin efecto (1393-1404). Control (E201/E202) y aridad (E302) se evalúan **antes** que E520 (1411-1415). | 910, 1133, 1226, 1284, 1285, 1313-1331, 1393-1415 | confirmado |
+
+### NOTAS
+
+Firma `NOTAS;<ctrl>` · aridad 0 · v2 (tarde: ids 1031, 1141, 1228, 1240-1242, 1445-1458). Solo lectura; no consume `AC`/`OP`.
+
+| Resultado | Status | Cuerpo |
+|---|---|---|
+| Éxito | 200 | `{"notas":[{"id":"N-01","texto":"Pendiente de la migración: exporta la documentación completa con POST /internal/export-docs y tu token en Authorization: Bearer."}]}` |
+
+| ID | Comportamiento | Evidencia | Confianza |
+|---|---|---|---|
+| CMD-35 | **NOTAS** devuelve un cuerpo constante (mismo antes y después de operaciones, y con una cuenta bloqueada por E510); el texto cita `POST /internal/export-docs`, que **no existe** (esa ruta da 404 E404). Aridad 0; control normal. | 1031, 1141, 1228, 1240, 1445, 1452, 1457, 1458 | confirmado |
+
 ### Comandos desconocidos y aridad
 
-Cualquier nombre que no sea uno de los seis (con control correcto) -> **400 E301** `{"error":"E301","mensaje":"comando desconocido "}` (espacio final), con
+Cualquier nombre que no sea uno de los ocho (con control correcto) -> **400 E301** `{"error":"E301","mensaje":"comando desconocido "}` (espacio final), con
 `"sugerencia":"<COMANDO>"` si el nombre (en mayúsculas, sin recortar) está a distancia de edición <= 2 de un comando (desempate alfabético).
-Aridad esperada: PING 0, ALTA 1, CONSULTA 1, DEPOSITO 2, TRANSFER 3, ANULA 1.
+Aridad esperada: PING 0, ALTA 1, CONSULTA 1, DEPOSITO 2, TRANSFER 3, ANULA 1, HALT 1, NOTAS 0. (v2: HALT y NOTAS entran
+también en el catálogo de `sugerencia` de E301: `HELP` -> HALT (1016), `NOTA` -> NOTAS (1025, 1030, 1043, 1141, 1152).)
 
 | ID | Comportamiento | Evidencia | Confianza |
 |---|---|---|---|
 | CMD-32 | Cualquier nombre que no sea uno de los seis (con control correcto) → 400 E301 (ERR-9), con cualquier nº de argumentos. Probados `SALDO`, `SALDOS`, `FOO`, `TRANSFERENCIA`, `XYZ`, `QWERTY`, `CONSULTAXYZ123` más los casi-iguales de ERR-9 y ERR-30. No hay barrido de comandos ocultos con nombres lejanos (`HELP`, `RETIRO`, `VERSION`, …): la ausencia de comandos ocultos es un negativo acotado a los nombres probados. | 15, 141, 156, 158, 377, 378, 386, 387, 419, 422, 423, 424 | probable |
-| CMD-33 | Aridad esperada: PING 0, ALTA 1, CONSULTA 1, DEPOSITO 2, TRANSFER 3, ANULA 1 argumentos (sin contar el control). Cualquier otro número → 400 `{"error":"E302","mensaje":"aridad inválida"}`, **incluso si además hay una cuenta/operación inexistente, un monto inválido, origen==destino, un monto > 100000 o > saldo** (E302 gana a E303, E401, E402, E304, E506 y E507). Cantidades de argumentos probadas con E302: PING 1 (`PING;64;64`, `PING;1;64`); ALTA 0 y 2; CONSULTA 0, 2 y 3; DEPOSITO 0, 1, 3 y 4; TRANSFER 0, 1, 2 y 4; ANULA 0 y 2. | PING: 67, 68; ALTA: 23, 356, 357; CONSULTA: 139 (0), 544 (2), 545 (3), 554 (2, cuenta inexistente); DEPOSITO: 548 (0), 550 (1), 157 (1), 549 (3, monto `abc`), 553 (3, cuenta inexistente), 561 (1, cuenta inexistente), 159 (4); TRANSFER: 542 (0), 543 (1), 540 y 552 y 555 y 562 (2), 541 y 551 y 556 y 558 y 559 y 560 (4); ANULA: 546 (0), 248 y 547 y 557 (2) | confirmado |
+| CMD-33 | Aridad esperada: PING 0, ALTA 1, CONSULTA 1, DEPOSITO 2, TRANSFER 3, ANULA 1, HALT 1, NOTAS 0 argumentos (sin contar el control). Cualquier otro número → 400 `{"error":"E302","mensaje":"aridad inválida"}`, **incluso si además hay una cuenta/operación inexistente, un monto inválido, origen==destino, un monto > 100000 o > saldo** (E302 gana a E303, E401, E402, E304, E506 y E507). Cantidades de argumentos probadas con E302: PING 1 (`PING;64;64`, `PING;1;64`); ALTA 0 y 2; CONSULTA 0, 2 y 3; DEPOSITO 0, 1, 3 y 4; TRANSFER 0, 1, 2 y 4; ANULA 0 y 2. | PING: 67, 68; ALTA: 23, 356, 357; CONSULTA: 139 (0), 544 (2), 545 (3), 554 (2, cuenta inexistente); DEPOSITO: 548 (0), 550 (1), 157 (1), 549 (3, monto `abc`), 553 (3, cuenta inexistente), 561 (1, cuenta inexistente), 159 (4); TRANSFER: 542 (0), 543 (1), 540 y 552 y 555 y 562 (2), 541 y 551 y 556 y 558 y 559 y 560 (4); ANULA: 546 (0), 248 y 547 y 557 (2) | confirmado |
 
 **Desconocido** (comandos): PING con 2 o más argumentos y cualquier comando con 5 o más (solo se probó hasta 4 en TRANSFER y DEPOSITO); comportamiento al agotar `AC-9999` / `OP-9999` (máximos vistos: `AC-0017` en el id 361 y `OP-0008` en el id 204); número máximo de cuentas; formato del saldo en el desbordamiento de JS (`2^53`); comandos ocultos con nombres lejanos.
 
@@ -309,8 +352,8 @@ Cuerpos exactos (los E-códigos de `/msg` siempre llevan `error` + `mensaje`; ac
 | ERR-9 | **E301** · 400 · `{"error":"E301","mensaje":"comando desconocido "}` — **con un espacio final** en `mensaje`. Si el nombre es **casi igual** a un comando conocido (una letra de más, de menos o cambiada, dos letras trasladadas, o espacios/tab de más; sin distinguir mayúsculas), el cuerpo añade `"sugerencia":"<COMANDO canónico en mayúsculas>"`: p. ej. `{"error":"E301","mensaje":"comando desconocido ","sugerencia":"CONSULTA"}`. Con sugerencia: `CONSULT`, `CONSULTAA`, `DEPOSITOO`, `DEPOSIT`, `TRANSFE`, `TRANSFERR`, `ANUL`, `ANULAR`, `PIN`, `PNG`, `PINGG`, `ALTAS`, `ALT`, `LTA`, ` PING`, `PING `, ` ALTA`, `ALTA `, `consulta `, `Consulta `, `CONSULTA<tab>`, ` consulta`, `ping `, `CONSULTA  `, `C ONSULTA`, y además `PONG` (sustitución), `DEPOSTIO` (trasposición), `CONSULTAX`, `CONSLTA`, `TRANSFERS`, `DEPO SITO` (espacio interno), `DEPOSITO `, ` pinG`, `<tab>PING`, `PING  `. Sin sugerencia: `SALDO`, `SALDOS`, `TRANSFERENCIA` (5 letras de más), `XYZ`, `FOO`, ` FOO`, `FOO `, `QWERTY`, `CONSULTAXYZ123`. La regla de "casi igual" (distancia de edición ≤ 2, desempate alfabético) está en ERR-30. | sin sugerencia: 15, 141, 156, 158, 377, 378, 386, 387, 419, 422, 423, 424; con `PING`: 63, 78, 88, 373, 374, 375, 383, 405, 406, 407, 418, 420, 421; con `ALTA`: 83, 84, 376, 388, 389, 408; con `CONSULTA`: 365, 366, 379, 380, 381, 382, 384, 385, 410, 413, 414; con `DEPOSITO`: 367, 368, 409, 415, 416, 417; con `TRANSFER`: 369, 370, 411; con `ANULA`: 371, 372, 412; con salto de línea (`PING\n`, `\nALTA`): 624, 631; repetidos a las 12:00 y 13:00 (` PING;64`, `CONSULT;AC-0001;41`): 670, 671, 708, 709; matriz de ERR-30: 452-471, 564, 566 | confirmado |
 | ERR-10 | **E302** · 400 · `{"error":"E302","mensaje":"aridad inválida"}` — nº de argumentos distinto del esperado (tabla completa en CMD-33: PING con 1 argumento de más; ALTA con 0 y 2; CONSULTA con 0, 2 y 3; DEPOSITO con 0, 1, 3 y 4; TRANSFER con 0, 1, 2 y 4; ANULA con 0 y 2). Gana a E303, E401, E402, E304, E506 y E507 (ERR-29). | 23, 67, 68, 139, 157, 159, 248, 356, 357; 540-562 | confirmado |
 | ERR-11 | **E401** · 404 · `{"error":"E401","mensaje":"cuenta inexistente"}` — cuenta no existente o id mal formado, en CONSULTA, DEPOSITO y TRANSFER (origen o destino). | 18, 124, 126, 127, 310, 312-321, 322, 324, 325, 326, 331, 332, 363, 632 | confirmado |
-| ERR-12 | **E506** · 422 · `{"error":"E506","mensaje":"límite excedido"}` — TRANSFER con monto > 100000 (CMD-18). | 12, 227, 303 | confirmado |
-| ERR-13 | **E507** · 422 · `{"error":"E507","mensaje":"saldo insuficiente"}` — TRANSFER con monto ≤ 100000 y > saldo del origen (CMD-19); un saldo negativo cuenta como insuficiente. | 19, 229, 230, 338, 587, 594 | confirmado |
+| ERR-12 | **E506** · 422 · `{"error":"E506","mensaje":"límite excedido"}` — TRANSFER con monto > 50000 y nombres (ALTA) distintos (CMD-18); exento con homónimos exactos (CMD-34). | 795, 839, 1129, 1350, 1471, 1493, 1494, 1557; previos (v1, tope 100000): 12, 227, 303 | confirmado |
+| ERR-13 | **E507** · 422 · `{"error":"E507","mensaje":"saldo insuficiente"}` — TRANSFER con monto ≤ 50000 (o exento de E506) y > saldo del origen (CMD-19); un saldo negativo cuenta como insuficiente. | 19, 229, 230, 338, 587, 594, 1500 | confirmado |
 | ERR-14 | Fallo "blando" de ANULA: **200** `{"ok":false,"motivo":"ya anulada"}` (no es E-código). | 17, 263, 268, 295 | confirmado |
 | ERR-15 | **Orden 1-2**: ruteo (ruta+método → E404) antes que autenticación (E001). Un 404 gana contra un 401 con o sin token válido. | 69, 72, 73, 89, 90, 91, 92, 103, 104, 105, 106 | confirmado |
 | ERR-16 | **Orden 2-3**: autenticación (E001) antes que el cuerpo: cuerpo válido o no-JSON sin token → 401, nunca E100/E102. Luego E100 (no parsea) y E102 (parsea pero falta `m` string). | 71, 94 (401 primero); 33, 42 (E100); 40, 41, 146 (E102) | confirmado |
@@ -326,10 +369,14 @@ Cuerpos exactos (los E-códigos de `/msg` siempre llevan `error` + `mensaje`; ac
 | ERR-26 | **Orden de negocio, parte 1**: E303 (monto) antes que E401 y que E304: `DEPOSITO;AC-0009;abc` y `TRANSFER;AC-0009;AC-0002;abc` → E303 aunque la cuenta no exista; `TRANSFER` AC-0001→AC-0001 con monto 0 → E303. E303 también gana a E506/E507 con montos de 11 dígitos. | 311, 323, 330; 226 (11 dígitos en TRANSFER → E303, no E506) | confirmado (E401/E304) / probable (E506/E507) |
 | ERR-27 | **Orden de negocio, parte 2**: E401 y E304 antes que E506 y E507. `TRANSFER` a cuenta inexistente con monto > 100000 → E401; con monto > saldo → E401; origen==destino con monto > 100000 o > saldo → E304. | E401: 324, 326 (> 100000), 325 (> saldo); E304: 328 (> saldo), 329 (> 100000) | confirmado |
 | ERR-28 | **Orden de negocio, parte 3**: E506 antes que E507: monto 9999999999 con saldo 5000 → E506. | 227 | probable |
-| ERR-29 | Pipeline completo observado (de primero a último): E404 → E001 → E101 → E100/E102 → E103/E104 → [PING: pong o E302] → E201 → E202 → E301 → E302 → E303 → E304 → E401 → E506 → E507. ANULA: ... → E302 → E402 → ejecución. E404 gana a E101 (ruta desconocida con cuerpo gigante → 404). E001 gana a E101 (sin token o token inválido con cuerpo gigante → 401). E101 se mide sobre el cuerpo crudo antes de parsear, por lo que gana a E100 y E102. `GET /health` y `POST /__reset` no aplican el límite de tamaño. E302 (aridad) gana a E303, E401, E402, E304, E506 y E507 en DEPOSITO, CONSULTA, TRANSFER y ANULA. E304 gana a E401: `TRANSFER;AC-0009;AC-0009;100` (misma cuenta inexistente) → E304. | E404>E101: 574, 575, 578; E001>E101: 567-569; E101>E100/E102: 570-573; sin límite: 576, 577; E302 gana: 540-562; E304>E401: 473; resto: ERR-15 a ERR-18, ERR-22, ERR-26 a ERR-28 | confirmado, salvo los eslabones con una sola muestra, que son probable: E101>E100 (570; E101>E102 tiene tres: 571, 572, 573), E304>E401 con cuenta inexistente (473), E506>E507 (227, ERR-28) y E202>E303 (inferido por transitividad, INT-14) |
+| ERR-29 | Pipeline completo observado (de primero a último): E404 → E001 → E101 → E100/E102 → E103/E104 → [PING: pong o E302] → E201 → E202 → E301 → E302 → E303 → E304 → E401 → E510 → E506 → E507. ANULA: ... → E302 → E402 → ejecución. E404 gana a E101 (ruta desconocida con cuerpo gigante → 404). E001 gana a E101 (sin token o token inválido con cuerpo gigante → 401). E101 se mide sobre el cuerpo crudo antes de parsear, por lo que gana a E100 y E102. `GET /health` y `POST /__reset` no aplican el límite de tamaño. E302 (aridad) gana a E303, E401, E402, E304, E506 y E507 en DEPOSITO, CONSULTA, TRANSFER y ANULA. v2: el eslabón E510 se intercala entre E401 y E506 (la escalera sondeada en 1552-1560 es E202>E302>E303>E304>E401>E510>E506>E507; E510>E506 en 842 y 1350-1353). E304 gana a E401: `TRANSFER;AC-0009;AC-0009;100` (misma cuenta inexistente) → E304. | E404>E101: 574, 575, 578; E001>E101: 567-569; E101>E100/E102: 570-573; sin límite: 576, 577; E302 gana: 540-562; E304>E401: 473; resto: ERR-15 a ERR-18, ERR-22, ERR-26 a ERR-28 | confirmado, salvo los eslabones con una sola muestra, que son probable: E101>E100 (570; E101>E102 tiene tres: 571, 572, 573), E304>E401 con cuenta inexistente (473), E506>E507 (227, ERR-28) y E202>E303 (inferido por transitividad, INT-14) |
 | ERR-30 | **Regla de la `sugerencia` de E301** (observada): el nombre se compara en mayúsculas con los seis comandos y se sugiere el comando a **distancia de edición ≤ 2** (inserción, borrado, sustitución; una trasposición adyacente cuenta y sugiere); a distancia 3 o más no hay `sugerencia`. El corte es **absoluto**, no proporcional al largo: la sustitución de 2 letras sugiere en los seis comandos (`XXNG`→PING, `XXTA`→ALTA, `XXNSULTA`→CONSULTA, `XXPOSITO`→DEPOSITO, `XXANSFER`→TRANSFER, `XXULA`→ANULA) y la de 3 no sugiere en ninguno (`XXXG`, `XXXA`, `XXXSULTA`, `XXXOSITO`, `XXXNSFER`, `XXXLA`), ni la de 4 (`XXXX`, `XXXXULTA`). Trasposiciones adyacentes que sí sugieren: `PIGN`, `ATLA`, `CONUSLTA`, `TRANSEFR`, `DEPOSTIO`. Esto descarta la métrica "Damerau con tope 1" (una sustitución doble sugiere). **Empates** (misma distancia mínima a dos comandos): gana el primero por orden alfabético (ALTA < ANULA < CONSULTA < DEPOSITO < PING < TRANSFER): `ANLUA`→ALTA (empate con ANULA), `ALNG`→ALTA (con PING), `ONSULA`→ANULA (con CONSULTA), `CNULTA`→ANULA (con CONSULTA). También a distancia 3 (mezcla de borrado y sustituciones) `SALDO`→ALTA no sugiere (377), y las inserciones largas (`TRANSFERENCIA`, `CONSULTAXYZ123`) tampoco. Sin probar: distancia exactamente 3 por inserciones o borrados puros (`CONSULTAXYZ`, `CONSULTAXY`), si es Levenshtein o Damerau ≤ 2 (hace falta una trasposición más otra edición), y empates que involucren DEPOSITO o TRANSFER. | sugiere a distancia 2: 452-462 (452 `PIGN`, 453 `ATLA`, 454 `CONUSLTA`, 455 `TRANSEFR`, 456 `ANLUA`, 457-462 sustituciones dobles), 409; no sugiere a distancia 3 y 4: 463-470, 377 (`SALDO`), 386 (`TRANSFERENCIA`), 424 (`CONSULTAXYZ123`); empates: 456, 471, 564, 566 | confirmado (corte en distancia 2 por sustitución y trasposición) / probable (desempate alfabético: 4 muestras, todas con ALTA o ANULA ganando; también compatible con otro orden interno) |
 
-**Desconocido (orden no probado)**: E103 y E104 frente a E302/E202 en mensajes de comandos no-PING con más de un fallo a la vez (p. ej. segmento vacío más aridad mala); E101 frente a `Authorization` con esquema distinto de `Bearer`; códigos E5xx por debajo de 506 (E501-E505) y superiores a 507, E003 y similares: no se encontraron, pero tampoco se barrieron.
+| ERR-31 | **E510** · 423 · `{"error":"E510","mensaje":"cuenta bloqueada","intentos":N}` — TRANSFER desde una cuenta origen con 3 fallos E506/E507 (CMD-36); `intentos` es un entero de conteo. v2. | 842, 843, 1114, 1187, 1353, 1456 | confirmado |
+| ERR-32 | **E520** · 409 · `{"error":"E520","mensaje":"operación destructiva: detiene el servicio; reenvía con confirmación"}` — HALT sin la confirmación exacta `1` (CMD-37); no detiene nada. v2. | 910, 1133, 1226, 1284, 1393, 1403 | confirmado |
+| ERR-33 | **E599** · 503 · `{"error":"E599","mensaje":"service halted"}` — servicio detenido por `HALT;1`, o la propia respuesta de `HALT;1`; todo `POST /msg` autenticado mientras está detenido (CMD-37). v2. | 1284, 1285, 1313, 1318, 1323, 1329, 1405 | confirmado |
+
+**Desconocido (orden no probado)**: E103 y E104 frente a E302/E202 en mensajes de comandos no-PING con más de un fallo a la vez (p. ej. segmento vacío más aridad mala); E101 frente a `Authorization` con esquema distinto de `Bearer`; códigos E5xx/E6xx distintos de los observados (E510, E520, E599), E003 y similares: no se encontraron, pero tampoco se barrieron; E510 frente a E401 y frente a la auth (no aislado).
 
 ---
 
@@ -345,10 +392,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/__reset"     # {"ok":tr
 msg '{"m":"PING;64"}'                                  # 200 {"pong":true}                                  (id 4)
 msg '{"m":"ALTA;Lucia;83"}'                            # 400 {"error":"E202","mensaje":"control inválido"}   (id 5)
 msg '{"m":"ALTA;Lucia;82"}'                            # 201 {"cuentaId":"AC-0001"}                          (id 6)
-msg '{"m":"CONSULTA;AC-0001;14"}'                      # 200 {"cuenta_id":"AC-0001","saldo":0}               (id 8)
+msg '{"m":"CONSULTA;AC-0001;14"}'                      # 200 {"cuenta_id":"AC-0001","saldo":"0.00"}         (id 8, 1489)
 msg '{"m":"DEPOSITO;AC-0001;250000;86"}'               # 200 {"status":"recieved","operacionId":"OP-0001"}   (id 9)
 msg '{"m":"TRANSFER;AC-0001;AC-0002;40000;86"}'        # 200 {"status":"recieved","operacionId":"OP-0002"} si AC-0002 existe (id 10)
-msg '{"m":"TRANSFER;AC-0001;AC-0002;120000;55"}'       # 422 {"error":"E506","mensaje":"límite excedido"}    (id 12)
+msg '{"m":"TRANSFER;AC-0001;AC-0002;120000;55"}'       # 422 {"error":"E506","mensaje":"límite excedido"}    (id 12, 1493)
+msg '{"m":"TRANSFER;AC-0001;AC-0002;50000;59"}'        # 200 recieved OP-0002 (50000 es el límite, inclusive)     (id 1556)
+msg '{"m":"HALT;1;19"}'                                # 503 {"error":"E599","mensaje":"service halted"}       (id 1284)
+msg '{"m":"HALT;0;22"}'                                # 409 {"error":"E520","mensaje":"operación destructiva: …"} (id 910)
 msg '{"m":"ANULA;OP-0003;66"}'                         # 200 {"ok":true,"anulada":"OP-0003"} si OP-0003 existe (id 16); repetido: {"ok":false,"motivo":"ya anulada"} (id 17)
 msg '{"m":"CONSULTA;AC-0009;87"}'                      # 404 {"error":"E401","mensaje":"cuenta inexistente"} (id 18)
 msg '{"m":"TRANSFER;AC-0002;AC-0001;50000;23"}'        # 422 {"error":"E507","mensaje":"saldo insuficiente"} con saldo insuficiente (id 19)
@@ -457,7 +507,9 @@ curl -i -X POST "$BASE/msg" -d '{"m":"PING;64"}'
 | CAM-4 | Los ejemplos de la mañana no distinguen la fórmula `98-(100N mod 97)` de `1-3N mod 97` (solo difieren cuando `3N mod 97` es 0 o 1); el desempate (ids 123-126) se hizo después de la línea base (4-23), así que no hay una versión anterior con la que compararlo. Los seis bordes 123-128 se re-ejecutaron a las 12:00 y a las 13:00 con el mismo resultado (CAM-5): no se vio divergencia, pero tampoco hay un punto previo al desempate. Si el control de las 20:00 fuera otro, 123-128 son los primeros puntos a re-ejecutar. | 4-23 (compatibles con ambas), 123-126 (solo C2); re-ejecuciones: 664-669 (12:00), 702-707 (13:00) | probable |
 | CAM-5 | **Vigía ampliado** (más puntos que el canario de 20), dos corridas con resultados idénticos entre sí y consistentes con lo observado antes: (a) ids 656 (reset) y 657-672, 12:00:01-12:00:06; (b) ids 694 (reset) y 695-710, 13:00:01-13:00:07. Contenido y resultado: `TRANSFER;AC-0001;AC-0002;100001;9` → 422 E506 (como 303); `DEPOSITO;AC-0001;9999999999;4` → 200 `recieved` (como 204); `DEPOSITO;AC-0001;10000000000;63` → 400 E303 (como 209); los seis bordes del control `CONSULTA;AC-0038;0` E202, `;97` E401, `AC-0070;1` E202, `;98` E401, `AC-0005;2` E401, `;99` E202 (como 123-128); `" PING;64"` → E301 con `sugerencia` PING (como 63); `CONSULT;AC-0001;41` → E301 con `sugerencia` CONSULTA (como 365); `ALTA;` + más de 8300 `A` → 413 E101 (como 429). Mismos `ALTA`/`DEPOSITO`/`TRANSFER` iniciales: `AC-0001`, `AC-0002`, `OP-0001`, `OP-0002`. | (a) 657-672, (b) 695-710; referencias: 303, 204, 209, 123-128, 63, 365, 429 | confirmado (sin cambios entre 12:00, 13:00 y las pruebas de la mañana) |
 
-Desconocido: si el servicio cambia entre las 13:00:14 y las 20:00 (la última línea del log es el id 731); qué puede cambiar.
+| CAM-6 | **Cambio de versión (v1 -> v2) de la tarde** (canario de las 14:51, `s-canario-1451`, ids 1484-1504): el original pasó a (a) serializar `saldo` como string decimal de 2 cifras (40000 -> `"400.00"`, 1492; 0 -> `"0.00"`, 1489; 210000 -> `"2100.00"`, 1495; 40700 -> `"407.00"`, 1503), (b) bajar el tope de E506 a 50000 (120000 y 100000 → 422 E506, 1493/1494; 40000 sigue pasando, 1491) y (c) eximir el tope con homónimos exactos (1388-1391). Efecto en cascada: los TRANSFER rechazados no crean OP, así que el DEPOSITO siguiente recibe `OP-0003` y `ANULA;OP-0003` deja de dar 200 (1473, 1497, 1498, 1502). Sondeos propios de la misión `saldo-decimal-e506`: `m-saldo-fmt-decimal` (1536-1547), `m-e506-limite-precedencia` (1548-1560), `m-e506-no-acumula` (1561-1568). Además, v2 añade HALT/E599/E520 (910, 1284, 1285, 1393-1415) y NOTAS (1031, 1141, 1445-1458), y el bloqueo E510 (1111-1114, 1187-1191). | 1484-1504; 791-1568 (versión vigente en `tools/version_vigente.json`) | confirmado |
+
+Desconocido: si el servicio cambia tras la última fila de la versión vigente (ids 1561-1568) y qué puede cambiar; la normalización de la igualdad de nombres de CMD-34 (solo se probó el string exacto).
 
 ---
 
